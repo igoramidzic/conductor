@@ -389,11 +389,11 @@
 [data-sidebar-action-row="true"]:where(
     :has(> [data-slot="sidebar-menu-action"]:hover)
   )
-  > [data-slot="sidebar-menu-button"],
+  > [data-sidebar-action-trigger="true"],
 [data-sidebar-action-row="true"]:where(
     :has(> [data-slot="sidebar-menu-action"]:focus-visible)
   )
-  > [data-slot="sidebar-menu-button"] {
+  > [data-sidebar-action-trigger="true"] {
   background-color: var(--sidebar-accent);
   color: var(--sidebar-accent-foreground);
 }
@@ -453,25 +453,18 @@
 [data-sidebar-add-action="true"] {
   color: color-mix(in srgb, var(--sidebar-foreground) 45%, transparent);
   opacity: 0;
-  visibility: hidden;
+  pointer-events: none;
+  visibility: visible;
   transition:
     color 120ms ease-out,
     opacity 120ms ease-out;
 }
 
-[data-sidebar-action-row="true"]:has(> [data-slot="sidebar-menu-button"]:hover)
-  > [data-sidebar-add-action="true"],
-[data-sidebar-action-row="true"]:has(
-    > [data-slot="sidebar-menu-button"]:focus-visible
-  )
-  > [data-sidebar-add-action="true"],
-[data-sidebar-action-row="true"]:has(> [data-sidebar-add-action="true"]:hover)
-  > [data-sidebar-add-action="true"],
-[data-sidebar-action-row="true"]:has(
-    > [data-sidebar-add-action="true"]:focus-visible
-  )
+[data-sidebar-action-row="true"]:hover > [data-sidebar-add-action="true"],
+[data-sidebar-action-row="true"]:focus-within
   > [data-sidebar-add-action="true"] {
   opacity: 1;
+  pointer-events: auto;
   visibility: visible;
 }
 

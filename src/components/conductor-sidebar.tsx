@@ -206,10 +206,14 @@ function SidebarSectionRow({
 }) {
   return (
     <SidebarMenu>
-      <SidebarMenuItem data-sidebar-action-row="true">
+      <SidebarMenuItem
+        className="group/sidebar-action-row"
+        data-sidebar-action-row="true"
+      >
         <CollapsibleTrigger
           render={
             <SidebarMenuButton
+              data-sidebar-action-trigger="true"
               data-sidebar-section-trigger="true"
               className="h-8 text-[13px] font-medium"
             />
@@ -332,38 +336,44 @@ export function ConductorSidebar({
                       key={project.id}
                       open={project.expanded}
                       onOpenChange={() => onToggleProject(project.id)}
-                      render={
-                        <SidebarMenuItem data-sidebar-action-row="true" />
-                      }
+                      render={<SidebarMenuItem />}
                     >
-                      <CollapsibleTrigger
-                        render={
-                          <SidebarMenuButton
-                            className={cn(
-                              "h-8 pr-8 text-[13px]",
-                              isActive && "bg-sidebar-accent font-medium",
-                            )}
-                            isActive={isActive}
+                      <div
+                        className="group/sidebar-action-row relative"
+                        data-sidebar-action-row="true"
+                      >
+                        <CollapsibleTrigger
+                          render={
+                            <SidebarMenuButton
+                              data-sidebar-action-trigger="true"
+                              className={cn(
+                                "h-8 pr-8 text-[13px]",
+                                isActive && "bg-sidebar-accent font-medium",
+                              )}
+                              isActive={isActive}
+                            />
+                          }
+                        >
+                          <Folder
+                            className="size-3.5 text-sidebar-foreground/70"
+                            aria-hidden="true"
                           />
-                        }
-                      >
-                        <Folder
-                          className="size-3.5 text-sidebar-foreground/70"
-                          aria-hidden="true"
-                        />
-                        <span className="min-w-0 truncate">{project.name}</span>
-                      </CollapsibleTrigger>
-                      <SidebarMenuAction
-                        data-sidebar-add-action="true"
-                        className="text-sidebar-foreground/45 hover:text-sidebar-foreground"
-                        aria-label={`New session in ${project.name}`}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onCreateSession(project.id);
-                        }}
-                      >
-                        <Plus aria-hidden="true" />
-                      </SidebarMenuAction>
+                          <span className="min-w-0 truncate">
+                            {project.name}
+                          </span>
+                        </CollapsibleTrigger>
+                        <SidebarMenuAction
+                          data-sidebar-add-action="true"
+                          className="text-sidebar-foreground/45 hover:text-sidebar-foreground"
+                          aria-label={`New session in ${project.name}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onCreateSession(project.id);
+                          }}
+                        >
+                          <Plus aria-hidden="true" />
+                        </SidebarMenuAction>
+                      </div>
 
                       <CollapsibleContent className="sidebar-collapse">
                         <SidebarMenu className="mt-0.5 gap-0.5">
