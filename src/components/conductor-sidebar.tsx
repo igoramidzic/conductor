@@ -1,13 +1,4 @@
-import {
-  Archive,
-  Folder,
-  Monitor,
-  Moon,
-  Palette,
-  Plus,
-  Settings2,
-  Sun,
-} from "lucide-react";
+import { Archive, Folder, Plus, Settings2 } from "lucide-react";
 import { type CSSProperties, useLayoutEffect, useRef, useState } from "react";
 
 import { useTheme } from "@/components/theme-provider";
@@ -385,9 +376,8 @@ export function ConductorSidebar({
               >
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger>
-                    <Palette aria-hidden="true" />
                     <span>Theme</span>
-                    <span className="ml-auto mr-1 text-xs capitalize text-muted-foreground">
+                    <span className="min-w-0 flex-1 text-right text-xs capitalize text-muted-foreground">
                       {theme}
                     </span>
                   </DropdownMenuSubTrigger>
@@ -405,15 +395,12 @@ export function ConductorSidebar({
                       }}
                     >
                       <DropdownMenuRadioItem value="light" closeOnClick>
-                        <Sun aria-hidden="true" />
                         Light
                       </DropdownMenuRadioItem>
                       <DropdownMenuRadioItem value="dark" closeOnClick>
-                        <Moon aria-hidden="true" />
                         Dark
                       </DropdownMenuRadioItem>
                       <DropdownMenuRadioItem value="system" closeOnClick>
-                        <Monitor aria-hidden="true" />
                         System
                       </DropdownMenuRadioItem>
                     </DropdownMenuRadioGroup>

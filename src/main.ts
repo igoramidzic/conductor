@@ -15,12 +15,14 @@ import * as pty from "node-pty";
 
 import { getAgentAccessArgs, resolveAgentAccessMode } from "./agent-access";
 import {
+  type AgentActivityKind,
   type AgentApprovalRequest,
   type AgentApprovalResponse,
   type AgentEvent,
   type AgentModel,
   type AgentProvider,
   type AgentRunRequest,
+  type AgentUsage,
   STANDALONE_TERMINAL_GROUP_ID,
   type TerminalCreateRequest,
   type TerminalEvent,
@@ -274,6 +276,8 @@ function disposeTerminalsForSender(senderId: number) {
 }
 
 const MODEL_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:/[\]-]{0,199}$/;
+const GEMINI_CONTEXT_WINDOW = 1_048_576;
+const CLAUDE_CONTEXT_WINDOW = 200_000;
 
 function sendAgentEvent(event: IpcMainInvokeEvent, payload: AgentEvent) {
   if (!event.sender.isDestroyed()) {
@@ -344,14 +348,33 @@ function readGeminiModels(): AgentModel[] {
   }
 
   return [
-    { provider: "gemini", model: "auto", label: "Auto", group: "Gemini" },
-    { provider: "gemini", model: "pro", label: "Pro", group: "Gemini" },
-    { provider: "gemini", model: "flash", label: "Flash", group: "Gemini" },
+    {
+      provider: "gemini",
+      model: "auto",
+      label: "Auto",
+      group: "Gemini",
+      contextWindow: GEMINI_CONTEXT_WINDOW,
+    },
+    {
+      provider: "gemini",
+      model: "pro",
+      label: "Pro",
+      group: "Gemini",
+      contextWindow: GEMINI_CONTEXT_WINDOW,
+    },
+    {
+      provider: "gemini",
+      model: "flash",
+      label: "Flash",
+      group: "Gemini",
+      contextWindow: GEMINI_CONTEXT_WINDOW,
+    },
     {
       provider: "gemini",
       model: "flash-lite",
       label: "Flash Lite",
       group: "Gemini",
+      contextWindow: GEMINI_CONTEXT_WINDOW,
     },
   ];
 }
@@ -367,24 +390,28 @@ function readClaudeModels(): AgentModel[] {
       model: "fable",
       label: "Fable (latest)",
       group: "Claude",
+      contextWindow: CLAUDE_CONTEXT_WINDOW,
     },
     {
       provider: "claude",
       model: "opus",
       label: "Opus (latest)",
       group: "Claude",
+      contextWindow: CLAUDE_CONTEXT_WINDOW,
     },
     {
       provider: "claude",
       model: "sonnet",
       label: "Sonnet (latest)",
       group: "Claude",
+      contextWindow: CLAUDE_CONTEXT_WINDOW,
     },
     {
       provider: "claude",
       model: "haiku",
       label: "Haiku (latest)",
       group: "Claude",
+      contextWindow: CLAUDE_CONTEXT_WINDOW,
     },
   ];
 
@@ -411,6 +438,9 @@ function readClaudeModels(): AgentModel[] {
         model: option.value,
         label: option.value.includes("[1m]") ? `${baseLabel} · 1M` : baseLabel,
         group: "Claude",
+        contextWindow: option.value.includes("[1m]")
+          ? 1_000_000
+          : CLAUDE_CONTEXT_WINDOW,
       });
     }
   } catch {
@@ -436,6 +466,8 @@ function readCodexModels(): AgentModel[] {
         slug?: unknown;
         display_name?: unknown;
         visibility?: unknown;
+        context_window?: unknown;
+        effective_context_window_percent?: unknown;
       }>;
     };
     return (cache.models ?? [])
@@ -453,6 +485,18 @@ function readCodexModels(): AgentModel[] {
             ? model.display_name
             : (model.slug as string),
         group: "Codex",
+        contextWindow:
+          typeof model.context_window === "number" &&
+          Number.isFinite(model.context_window) &&
+          model.context_window > 0
+            ? Math.floor(
+                model.context_window *
+                  (typeof model.effective_context_window_percent === "number" &&
+                  Number.isFinite(model.effective_context_window_percent)
+                    ? model.effective_context_window_percent / 100
+                    : 1),
+              )
+            : undefined,
       }));
   } catch {
     return [];
@@ -568,51 +612,14 @@ type ParserState = {
   response: string;
   finished: boolean;
   lastError?: string;
+  model?: string;
+  usage?: AgentUsage;
+  activityLabels: Map<string, string>;
+  activityIdsByIndex: Map<number, string>;
   stdoutLines: number;
   unparseableLines: number;
   eventCounts: Record<string, number>;
 };
-
-const DIAGNOSTIC_STRING_FIELDS = new Set([
-  "event",
-  "type",
-  "subtype",
-  "step_type",
-  "state",
-  "status",
-]);
-
-function summarizeStreamValue(value: unknown, key = "", depth = 0): unknown {
-  if (typeof value === "string") {
-    return DIAGNOSTIC_STRING_FIELDS.has(key)
-      ? value
-      : `<string:${value.length}>`;
-  }
-  if (
-    value === null ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return `<array:${value.length}>`;
-  }
-  if (typeof value !== "object") {
-    return `<${typeof value}>`;
-  }
-
-  const record = value as Record<string, unknown>;
-  if (depth >= 2) {
-    return { keys: Object.keys(record) };
-  }
-  return Object.fromEntries(
-    Object.entries(record).map(([entryKey, entryValue]) => [
-      entryKey,
-      summarizeStreamValue(entryValue, entryKey, depth + 1),
-    ]),
-  );
-}
 
 function logAgentStreamLine(
   request: AgentRunRequest,
@@ -638,11 +645,6 @@ function logAgentStreamLine(
   const eventName =
     typeof discriminator === "string" ? discriminator : "unknown";
   state.eventCounts[eventName] = (state.eventCounts[eventName] ?? 0) + 1;
-  console.info(`[agent:${request.runId}] stdout event.`, {
-    line: state.stdoutLines,
-    event: eventName,
-    shape: summarizeStreamValue(payload),
-  });
 }
 
 function sendConversation(
@@ -685,6 +687,179 @@ function sendComplete(
   });
 }
 
+function tokenCount(record: JsonRecord | undefined, ...fields: string[]) {
+  for (const field of fields) {
+    const value = record?.[field];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      return Math.floor(value);
+    }
+  }
+  return undefined;
+}
+
+function requestContextWindow(request: AgentRunRequest) {
+  const provider = request.provider ?? "gemini";
+  if (provider === "gemini") {
+    return GEMINI_CONTEXT_WINDOW;
+  }
+  if (provider === "claude") {
+    return request.model?.includes("[1m]") ? 1_000_000 : CLAUDE_CONTEXT_WINDOW;
+  }
+  return readCodexModels().find((model) => model.model === request.model)
+    ?.contextWindow;
+}
+
+function sendUsage(
+  event: IpcMainInvokeEvent,
+  request: AgentRunRequest,
+  state: ParserState,
+  usage: Partial<AgentUsage>,
+) {
+  const inputTokens = usage.inputTokens ?? state.usage?.inputTokens ?? 0;
+  const outputTokens = usage.outputTokens ?? state.usage?.outputTokens ?? 0;
+  const nextUsage: AgentUsage = {
+    inputTokens,
+    outputTokens,
+    cachedInputTokens:
+      usage.cachedInputTokens ?? state.usage?.cachedInputTokens ?? 0,
+    usedTokens: usage.usedTokens ?? inputTokens + outputTokens,
+    contextWindow:
+      usage.contextWindow ??
+      state.usage?.contextWindow ??
+      requestContextWindow(request),
+    processedTokens: usage.processedTokens ?? state.usage?.processedTokens,
+  };
+  state.usage = nextUsage;
+  sendAgentEvent(event, {
+    runId: request.runId,
+    type: "usage",
+    usage: nextUsage,
+  });
+}
+
+function sendRecordUsage(
+  event: IpcMainInvokeEvent,
+  request: AgentRunRequest,
+  state: ParserState,
+  usage: JsonRecord | undefined,
+  contextWindow?: number,
+  processedTokens?: number,
+) {
+  if (!usage) {
+    return;
+  }
+  const inputTokens = tokenCount(usage, "inputTokens", "input_tokens");
+  const outputTokens = tokenCount(usage, "outputTokens", "output_tokens");
+  const cachedInputTokens = tokenCount(
+    usage,
+    "cachedInputTokens",
+    "cached_input_tokens",
+  );
+  const usedTokens = tokenCount(usage, "totalTokens", "total_tokens");
+  if (
+    inputTokens === undefined &&
+    outputTokens === undefined &&
+    usedTokens === undefined
+  ) {
+    return;
+  }
+  sendUsage(event, request, state, {
+    inputTokens,
+    outputTokens,
+    cachedInputTokens,
+    usedTokens,
+    contextWindow,
+    processedTokens,
+  });
+}
+
+function humanizeToolName(value: string) {
+  return value
+    .replace(/^mcp__[^_]+__/, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function formatActivityValue(value: unknown, maxLength = 6_000) {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  let formatted: string;
+  if (typeof value === "string") {
+    formatted = value;
+  } else {
+    try {
+      formatted = JSON.stringify(value, null, 2);
+    } catch {
+      formatted = String(value);
+    }
+  }
+  if (!formatted.trim()) {
+    return undefined;
+  }
+  return formatted.length > maxLength
+    ? `${formatted.slice(0, maxLength)}\n…`
+    : formatted;
+}
+
+function sendActivity(
+  event: IpcMainInvokeEvent,
+  request: AgentRunRequest,
+  state: ParserState,
+  activity: {
+    id: string;
+    kind: AgentActivityKind;
+    label: string;
+    stepType: string;
+    status: string;
+    detail?: string;
+    output?: string;
+  },
+) {
+  state.activityLabels.set(activity.id, activity.label);
+  sendAgentEvent(event, {
+    runId: request.runId,
+    type: "status",
+    activityId: activity.id,
+    kind: activity.kind,
+    label: activity.label,
+    detail: activity.detail,
+    output: activity.output,
+    stepType: activity.stepType,
+    state: activity.status,
+  });
+}
+
+function sendActivityDelta(
+  event: IpcMainInvokeEvent,
+  request: AgentRunRequest,
+  state: ParserState,
+  activity: {
+    id: string;
+    kind: AgentActivityKind;
+    label?: string;
+    field: "detail" | "output";
+    text: string;
+  },
+) {
+  if (!activity.text) {
+    return;
+  }
+  const label = activity.label ?? state.activityLabels.get(activity.id);
+  if (label) {
+    state.activityLabels.set(activity.id, label);
+  }
+  sendAgentEvent(event, {
+    runId: request.runId,
+    type: "activity-delta",
+    activityId: activity.id,
+    kind: activity.kind,
+    label,
+    field: activity.field,
+    text: activity.text,
+  });
+}
+
 function parseGeminiLine(
   event: IpcMainInvokeEvent,
   request: AgentRunRequest,
@@ -710,35 +885,119 @@ function parseGeminiLine(
     return;
   }
 
-  if (
-    payload.type === "message" &&
-    payload.role === "assistant" &&
-    typeof payload.content === "string"
-  ) {
-    sendDelta(event, request, state, payload.content);
+  if (payload.type === "session_update" && typeof payload.model === "string") {
+    state.model = payload.model;
     return;
   }
 
-  if (payload.type === "tool_use" && typeof payload.tool_name === "string") {
-    sendAgentEvent(event, {
-      runId: request.runId,
-      type: "status",
-      activityId: String(payload.tool_id ?? payload.tool_name),
-      label: payload.tool_name.replace(/[_-]+/g, " "),
+  if (
+    payload.type === "message" &&
+    (payload.role === "assistant" || payload.role === "agent")
+  ) {
+    if (typeof payload.content === "string") {
+      sendDelta(event, request, state, payload.content);
+      return;
+    }
+    for (const part of Array.isArray(payload.content) ? payload.content : []) {
+      const content = asRecord(part);
+      if (content?.type === "text" && typeof content.text === "string") {
+        sendDelta(event, request, state, content.text);
+      } else if (
+        content?.type === "thought" &&
+        typeof content.thought === "string"
+      ) {
+        sendActivity(event, request, state, {
+          id: String(payload.id ?? "reasoning"),
+          kind: "reasoning",
+          label: "Thought through the request",
+          detail: content.thought,
+          stepType: "reasoning",
+          status: "COMPLETED",
+        });
+      }
+    }
+    return;
+  }
+
+  if (
+    (payload.type === "tool_use" || payload.type === "tool_request") &&
+    typeof (payload.tool_name ?? payload.name) === "string"
+  ) {
+    const toolName = String(payload.tool_name ?? payload.name);
+    sendActivity(event, request, state, {
+      id: String(payload.tool_id ?? payload.requestId ?? toolName),
+      kind: "tool",
+      label: humanizeToolName(toolName),
+      detail: formatActivityValue(
+        payload.parameters ??
+          payload.input ??
+          payload.arguments ??
+          payload.args,
+      ),
       stepType: "tool_use",
-      state: "RUNNING",
+      status: "RUNNING",
     });
     return;
   }
 
-  if (payload.type === "tool_result") {
-    sendAgentEvent(event, {
-      runId: request.runId,
-      type: "status",
-      activityId: String(payload.tool_id ?? "tool"),
-      label: "Tool",
+  if (payload.type === "tool_result" || payload.type === "tool_response") {
+    const activityId = String(payload.tool_id ?? payload.requestId ?? "tool");
+    sendActivity(event, request, state, {
+      id: activityId,
+      kind: "tool",
+      label:
+        state.activityLabels.get(activityId) ??
+        (typeof payload.name === "string"
+          ? humanizeToolName(payload.name)
+          : "Used tool"),
+      output: formatActivityValue(
+        payload.output ?? payload.result ?? payload.content ?? payload.data,
+      ),
       stepType: "tool_use",
-      state: payload.status === "success" ? "COMPLETED" : "ERROR",
+      status:
+        payload.isError === true || payload.status === "error"
+          ? "ERROR"
+          : "COMPLETED",
+    });
+    return;
+  }
+
+  if (payload.type === "usage") {
+    const inputTokens = tokenCount(payload, "inputTokens", "input_tokens");
+    const outputTokens = tokenCount(payload, "outputTokens", "output_tokens");
+    const cachedInputTokens = tokenCount(
+      payload,
+      "cachedTokens",
+      "cachedInputTokens",
+      "cached_input_tokens",
+    );
+    // Gemini reports the current model call here. Replacing the previous
+    // values lets an automatic context compaction reduce the displayed usage.
+    sendUsage(event, request, state, {
+      inputTokens,
+      outputTokens,
+      cachedInputTokens,
+      usedTokens:
+        inputTokens !== undefined || outputTokens !== undefined
+          ? (inputTokens ?? 0) + (outputTokens ?? 0)
+          : undefined,
+      contextWindow: GEMINI_CONTEXT_WINDOW,
+    });
+    return;
+  }
+
+  if (
+    (payload.type === "thought" || payload.type === "reasoning") &&
+    typeof (payload.content ?? payload.text) === "string"
+  ) {
+    const text = String(payload.content ?? payload.text);
+    sendActivity(event, request, state, {
+      id: String(payload.id ?? "reasoning"),
+      kind: "reasoning",
+      label: "Thought through the request",
+      detail: text,
+      stepType: "reasoning",
+      status: "COMPLETED",
     });
     return;
   }
@@ -763,7 +1022,26 @@ function parseGeminiLine(
       return;
     }
     sendComplete(event, request, state);
+    return;
   }
+
+  if (payload.type === "agent_end" && payload.reason === "completed") {
+    sendComplete(event, request, state);
+  }
+}
+
+function claudeUsageFields(usage: JsonRecord | undefined) {
+  if (!usage) {
+    return undefined;
+  }
+  const uncachedInput = tokenCount(usage, "input_tokens", "inputTokens") ?? 0;
+  const cacheCreation = tokenCount(usage, "cache_creation_input_tokens") ?? 0;
+  const cacheRead = tokenCount(usage, "cache_read_input_tokens") ?? 0;
+  return {
+    inputTokens: uncachedInput + cacheCreation + cacheRead,
+    outputTokens: tokenCount(usage, "output_tokens", "outputTokens") ?? 0,
+    cachedInputTokens: cacheCreation + cacheRead,
+  };
 }
 
 function parseClaudeLine(
@@ -789,6 +1067,36 @@ function parseClaudeLine(
   if (payload.type === "stream_event") {
     const streamEvent = payload.event as Record<string, unknown> | undefined;
     const delta = streamEvent?.delta as Record<string, unknown> | undefined;
+    const contentBlock = streamEvent?.content_block as
+      | Record<string, unknown>
+      | undefined;
+    const index =
+      typeof streamEvent?.index === "number" ? streamEvent.index : undefined;
+    if (streamEvent?.type === "message_start") {
+      const message = asRecord(streamEvent.message);
+      if (typeof message?.model === "string") {
+        state.model = message.model;
+      }
+      const usage = claudeUsageFields(asRecord(message?.usage));
+      if (usage) {
+        sendUsage(event, request, state, {
+          ...usage,
+          usedTokens: usage.inputTokens + usage.outputTokens,
+        });
+      }
+      return;
+    }
+    if (streamEvent?.type === "message_delta") {
+      const outputTokens = tokenCount(
+        asRecord(streamEvent.usage),
+        "output_tokens",
+        "outputTokens",
+      );
+      if (outputTokens !== undefined) {
+        sendUsage(event, request, state, { outputTokens });
+      }
+      return;
+    }
     if (
       streamEvent?.type === "content_block_delta" &&
       delta?.type === "text_delta" &&
@@ -797,9 +1105,138 @@ function parseClaudeLine(
       sendDelta(event, request, state, delta.text);
       return;
     }
+    if (streamEvent?.type === "content_block_start" && contentBlock) {
+      const activityId = String(
+        contentBlock.id ??
+          (contentBlock.type === "thinking"
+            ? `reasoning-${index ?? 0}`
+            : `activity-${index ?? 0}`),
+      );
+      if (index !== undefined) {
+        state.activityIdsByIndex.set(index, activityId);
+      }
+      if (contentBlock.type === "thinking") {
+        sendActivity(event, request, state, {
+          id: activityId,
+          kind: "reasoning",
+          label: "Thinking",
+          stepType: "reasoning",
+          status: "RUNNING",
+        });
+      } else if (
+        contentBlock.type === "tool_use" &&
+        typeof contentBlock.name === "string"
+      ) {
+        sendActivity(event, request, state, {
+          id: activityId,
+          kind: "tool",
+          label: humanizeToolName(contentBlock.name),
+          detail: formatActivityValue(contentBlock.input),
+          stepType: "tool_use",
+          status: "RUNNING",
+        });
+      }
+      return;
+    }
+    if (
+      streamEvent?.type === "content_block_delta" &&
+      delta?.type === "thinking_delta" &&
+      typeof delta.thinking === "string"
+    ) {
+      const activityId =
+        (index !== undefined
+          ? state.activityIdsByIndex.get(index)
+          : undefined) ?? `reasoning-${index ?? 0}`;
+      sendActivityDelta(event, request, state, {
+        id: activityId,
+        kind: "reasoning",
+        label: "Thinking",
+        field: "detail",
+        text: delta.thinking,
+      });
+      return;
+    }
+    if (
+      streamEvent?.type === "content_block_delta" &&
+      delta?.type === "input_json_delta" &&
+      typeof delta.partial_json === "string"
+    ) {
+      const activityId =
+        (index !== undefined
+          ? state.activityIdsByIndex.get(index)
+          : undefined) ?? `activity-${index ?? 0}`;
+      sendActivityDelta(event, request, state, {
+        id: activityId,
+        kind: "tool",
+        field: "detail",
+        text: delta.partial_json,
+      });
+      return;
+    }
+    if (streamEvent?.type === "content_block_stop" && index !== undefined) {
+      const activityId = state.activityIdsByIndex.get(index);
+      if (
+        activityId &&
+        state.activityLabels.get(activityId)?.toLowerCase() === "thinking"
+      ) {
+        sendActivity(event, request, state, {
+          id: activityId,
+          kind: "reasoning",
+          label: "Thought through the request",
+          stepType: "reasoning",
+          status: "COMPLETED",
+        });
+      }
+      return;
+    }
   }
 
   if (payload.type === "assistant") {
+    const message = payload.message as Record<string, unknown> | undefined;
+    if (typeof message?.model === "string") {
+      state.model = message.model;
+    }
+    const usage = claudeUsageFields(asRecord(message?.usage));
+    if (usage) {
+      sendUsage(event, request, state, {
+        ...usage,
+        usedTokens: usage.inputTokens + usage.outputTokens,
+      });
+    }
+    const content = Array.isArray(message?.content) ? message.content : [];
+    for (const [index, block] of content.entries()) {
+      if (!block || typeof block !== "object") {
+        continue;
+      }
+      const entry = block as Record<string, unknown>;
+      if (entry.type === "thinking" && typeof entry.thinking === "string") {
+        sendActivity(event, request, state, {
+          id: String(
+            entry.id ??
+              state.activityIdsByIndex.get(index) ??
+              `reasoning-${index}`,
+          ),
+          kind: "reasoning",
+          label: "Thought through the request",
+          detail: entry.thinking,
+          stepType: "reasoning",
+          status: "COMPLETED",
+        });
+      } else if (entry.type === "tool_use" && typeof entry.name === "string") {
+        sendActivity(event, request, state, {
+          id: String(entry.id ?? entry.name),
+          kind: "tool",
+          label: humanizeToolName(entry.name),
+          detail: formatActivityValue(entry.input),
+          stepType: "tool_use",
+          status: "RUNNING",
+        });
+      }
+    }
+    return;
+  }
+
+  if (payload.type === "user") {
     const message = payload.message as Record<string, unknown> | undefined;
     const content = Array.isArray(message?.content) ? message.content : [];
     for (const block of content) {
@@ -807,16 +1244,18 @@ function parseClaudeLine(
         continue;
       }
       const entry = block as Record<string, unknown>;
-      if (entry.type === "tool_use" && typeof entry.name === "string") {
-        sendAgentEvent(event, {
-          runId: request.runId,
-          type: "status",
-          activityId: String(entry.id ?? entry.name),
-          label: entry.name.replace(/[_-]+/g, " "),
-          stepType: "tool_use",
-          state: "RUNNING",
-        });
+      if (entry.type !== "tool_result") {
+        continue;
       }
+      const activityId = String(entry.tool_use_id ?? "tool");
+      sendActivity(event, request, state, {
+        id: activityId,
+        kind: "tool",
+        label: state.activityLabels.get(activityId) ?? "Used tool",
+        output: formatActivityValue(entry.content),
+        stepType: "tool_use",
+        status: entry.is_error === true ? "ERROR" : "COMPLETED",
+      });
     }
     return;
   }
@@ -834,6 +1273,29 @@ function parseClaudeLine(
       });
       return;
     }
+    const modelUsage = asRecord(payload.modelUsage);
+    const exactModelUsage = state.model
+      ? asRecord(modelUsage?.[state.model])
+      : undefined;
+    const fallbackModelUsage = Object.values(modelUsage ?? {})
+      .map(asRecord)
+      .find((usage) => usage !== undefined);
+    const contextWindow = tokenCount(
+      exactModelUsage ?? fallbackModelUsage,
+      "contextWindow",
+      "context_window",
+    );
+    if (contextWindow !== undefined) {
+      sendUsage(event, request, state, { contextWindow });
+    } else if (!state.usage) {
+      const usage = claudeUsageFields(asRecord(payload.usage));
+      if (usage) {
+        sendUsage(event, request, state, {
+          ...usage,
+          usedTokens: usage.inputTokens + usage.outputTokens,
+        });
+      }
+    }
     sendComplete(
       event,
       request,
@@ -843,34 +1305,280 @@ function parseClaudeLine(
   }
 }
 
-function codexActivityLabel(item: Record<string, unknown>): string | null {
-  if (item.type === "command_execution" || item.type === "commandExecution") {
-    return "Running command";
+type CodexActivityDescriptor = {
+  kind: AgentActivityKind;
+  label: string;
+  stepType: string;
+  detail?: string;
+  output?: string;
+};
+
+function codexItemType(item: JsonRecord) {
+  return String(item.type ?? "working")
+    .replace(/_/g, "")
+    .toLowerCase();
+}
+
+function codexReasoningSummary(item: JsonRecord) {
+  const summary = Array.isArray(item.summary) ? item.summary : [];
+  const text = summary
+    .map((part) => {
+      if (typeof part === "string") {
+        return part;
+      }
+      const record = asRecord(part);
+      return typeof record?.text === "string" ? record.text : "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
+  return text || (typeof item.text === "string" ? item.text : undefined);
+}
+
+function codexReasoningPresentation(item: JsonRecord) {
+  const summary = codexReasoningSummary(item);
+  if (!summary) {
+    return { label: "Thinking", detail: undefined };
   }
-  if (item.type === "file_change" || item.type === "fileChange") {
-    return "Editing files";
-  }
-  if (item.type === "web_search" || item.type === "webSearch") {
-    return "Searching the web";
-  }
-  if (item.type === "mcp_tool_call" || item.type === "mcpToolCall") {
-    return typeof item.tool === "string" ? item.tool : "Using tool";
+  const lines = summary.split("\n");
+  const firstLineIndex = lines.findIndex((line) => line.trim().length > 0);
+  const firstLine = lines[firstLineIndex] ?? "Thinking";
+  const cleanLabel = firstLine
+    .trim()
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/^\*\*(.+)\*\*$/, "$1")
+    .replace(/^__(.+)__$/, "$1")
+    .trim();
+  const label =
+    cleanLabel.length > 84 ? `${cleanLabel.slice(0, 84)}…` : cleanLabel;
+  const detail = lines
+    .filter((_, index) => index !== firstLineIndex)
+    .join("\n")
+    .trim();
+  return {
+    label: label || "Thought through the request",
+    detail,
+  };
+}
+
+function unwrapShellCommand(command: string) {
+  const match = command.match(
+    /^(?:\/[^\s]+\/)?(?:zsh|bash|sh)\s+-lc\s+(["'])([\s\S]*)\1$/,
+  );
+  return match?.[2] ?? command;
+}
+
+function shellCommandLabel(command: string) {
+  const body = unwrapShellCommand(command).trim().replace(/\s+/g, " ");
+  const tokens = body.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+  const executable = path.basename(tokens[0] ?? "command");
+  if (["cat", "head", "tail", "sed"].includes(executable)) {
+    const candidate = tokens.at(-1)?.replace(/^['"]|['"]$/g, "");
+    if (candidate && !candidate.startsWith("-")) {
+      return `Read ${path.basename(candidate)}`;
+    }
   }
   if (
-    [
-      "reasoning",
-      "agent_message",
-      "agentMessage",
-      "user_message",
-      "userMessage",
-      "error",
-    ].includes(String(item.type))
+    executable === "grep" ||
+    (executable === "rg" && !body.includes("--files"))
   ) {
+    return "Searched the project";
+  }
+  if (executable === "find" || body.startsWith("rg --files")) {
+    return "Listed files";
+  }
+  if (body.startsWith("git status")) {
+    return "Checked git status";
+  }
+  if (body.startsWith("git diff")) {
+    return "Reviewed changes";
+  }
+  return `Ran ${body}`;
+}
+
+function codexCommandLabel(item: JsonRecord) {
+  const actions = Array.isArray(item.commandActions)
+    ? item.commandActions
+    : Array.isArray(item.command_actions)
+      ? item.command_actions
+      : [];
+  const action = asRecord(actions[0]);
+  const actionType = String(action?.type ?? "").toLowerCase();
+  if (actionType === "read" && typeof action?.path === "string") {
+    return `Read ${path.basename(action.path)}`;
+  }
+  if (actionType === "listfiles") {
+    return "Listed files";
+  }
+  if (actionType === "search" && typeof action?.query === "string") {
+    const query =
+      action.query.length > 44 ? `${action.query.slice(0, 44)}…` : action.query;
+    return `Searched for “${query}”`;
+  }
+  if (typeof item.command === "string") {
+    return shellCommandLabel(item.command);
+  }
+  return "Ran command";
+}
+
+function codexFileChangeDetail(item: JsonRecord) {
+  const changes = Array.isArray(item.changes) ? item.changes : [];
+  const detail = changes
+    .map((value) => {
+      const change = asRecord(value);
+      if (!change || typeof change.path !== "string") {
+        return "";
+      }
+      const kindRecord = asRecord(change.kind);
+      const kind = String(kindRecord?.type ?? change.kind ?? "update");
+      return [
+        `${kind}  ${change.path}`,
+        typeof change.diff === "string" ? change.diff : undefined,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .filter(Boolean)
+    .join("\n");
+  return formatActivityValue(detail);
+}
+
+function codexFileChangeLabel(item: JsonRecord) {
+  const changes = Array.isArray(item.changes) ? item.changes : [];
+  const firstChange = asRecord(changes[0]);
+  if (changes.length !== 1 || typeof firstChange?.path !== "string") {
+    return `Edited ${changes.length || "project"} files`;
+  }
+
+  const diff = typeof firstChange.diff === "string" ? firstChange.diff : "";
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      additions += 1;
+    } else if (line.startsWith("-") && !line.startsWith("---")) {
+      deletions += 1;
+    }
+  }
+  const stats =
+    additions > 0 || deletions > 0 ? ` +${additions} -${deletions}` : "";
+  return `Edited ${path.basename(firstChange.path)}${stats}`;
+}
+
+function codexActivityDescriptor(
+  item: JsonRecord,
+): CodexActivityDescriptor | null {
+  const type = codexItemType(item);
+  if (type === "reasoning") {
+    const presentation = codexReasoningPresentation(item);
+    return {
+      kind: "reasoning",
+      label: presentation.label,
+      stepType: "reasoning",
+      detail: presentation.detail,
+    };
+  }
+  if (type === "plan") {
+    return {
+      kind: "reasoning",
+      label: "Updated the plan",
+      stepType: "plan",
+      detail: typeof item.text === "string" ? item.text : undefined,
+    };
+  }
+  if (type === "commandexecution") {
+    return {
+      kind: "command",
+      label: codexCommandLabel(item),
+      stepType: "command_execution",
+      detail: typeof item.command === "string" ? item.command : undefined,
+      output: formatActivityValue(
+        item.aggregatedOutput ?? item.aggregated_output,
+      ),
+    };
+  }
+  if (type === "filechange") {
+    return {
+      kind: "file-change",
+      label: codexFileChangeLabel(item),
+      stepType: "file_change",
+      detail: codexFileChangeDetail(item),
+    };
+  }
+  if (type === "websearch") {
+    const action = asRecord(item.action);
+    const detail =
+      typeof item.query === "string"
+        ? item.query
+        : typeof action?.query === "string"
+          ? action.query
+          : typeof action?.url === "string"
+            ? action.url
+            : undefined;
+    return {
+      kind: "web-search",
+      label:
+        action?.type === "openPage" ? "Opened a web page" : "Searched the web",
+      stepType: "web_search",
+      detail,
+    };
+  }
+  if (type === "mcptoolcall" || type === "dynamictoolcall") {
+    const tool = typeof item.tool === "string" ? item.tool : "tool";
+    const server = typeof item.server === "string" ? item.server : undefined;
+    const argumentsText = formatActivityValue(item.arguments);
+    return {
+      kind: "tool",
+      label: humanizeToolName(tool),
+      stepType: type === "mcptoolcall" ? "mcp_tool_call" : "dynamic_tool_call",
+      detail: [server ? `Server: ${server}` : undefined, argumentsText]
+        .filter(Boolean)
+        .join("\n\n"),
+      output: formatActivityValue(
+        item.error ?? item.result ?? item.contentItems,
+      ),
+    };
+  }
+  if (type === "collabagenttoolcall" || type === "subagentactivity") {
+    return {
+      kind: "tool",
+      label:
+        type === "collabagenttoolcall"
+          ? "Coordinated an agent"
+          : "Agent activity",
+      stepType: type,
+      detail: formatActivityValue({
+        tool: item.tool,
+        agent: item.agentPath,
+        prompt: item.prompt,
+        model: item.model,
+      }),
+    };
+  }
+  if (type === "imageview") {
+    return {
+      kind: "tool",
+      label: "Viewed an image",
+      stepType: "image_view",
+      detail: typeof item.path === "string" ? item.path : undefined,
+    };
+  }
+  if (["agentmessage", "usermessage", "hookprompt", "error"].includes(type)) {
     return null;
   }
-  return typeof item.type === "string"
-    ? item.type.replace(/[_-]+/g, " ")
-    : "Working";
+  return {
+    kind: "other",
+    label: humanizeToolName(String(item.type ?? "Working")),
+    stepType: String(item.type ?? "working"),
+    detail: formatActivityValue(item),
+  };
+}
+
+function codexActivityState(item: JsonRecord, completed: boolean) {
+  const status = String(item.status ?? "").toLowerCase();
+  if (["failed", "declined", "error"].includes(status)) {
+    return "ERROR";
+  }
+  return completed || status === "completed" ? "COMPLETED" : "RUNNING";
 }
 
 function parseCodexLine(
@@ -910,21 +1618,21 @@ function parseCodexLine(
       return;
     }
 
-    const activityLabel = codexActivityLabel(item);
-    if (activityLabel) {
-      sendAgentEvent(event, {
-        runId: request.runId,
-        type: "status",
-        activityId: String(item.id ?? item.type ?? "working"),
-        label: activityLabel,
-        stepType: typeof item.type === "string" ? item.type : "working",
-        state: payload.type === "item.completed" ? "COMPLETED" : "RUNNING",
+    const activity = codexActivityDescriptor(item);
+    if (activity) {
+      sendActivity(event, request, state, {
+        id: String(item.id ?? item.type ?? "working"),
+        ...activity,
+        status: codexActivityState(item, payload.type === "item.completed"),
       });
     }
     return;
   }
 
   if (payload.type === "turn.completed") {
+    // `codex exec --json` reports cumulative processing for the entire turn
+    // here, not the active model context. Treating it as context usage can
+    // exceed the model window after a tool-heavy turn.
     sendComplete(event, request, state);
     return;
   }
@@ -1001,10 +1709,21 @@ function codexFileChange(value: unknown) {
   };
 }
 
-function startCodexApprovalRun(
-  event: IpcMainInvokeEvent,
-  request: AgentRunRequest,
-) {
+function codexAppServerAccess(request: AgentRunRequest) {
+  const mode = resolveAgentAccessMode("codex", request.accessMode);
+  if (mode === "full-access") {
+    return {
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    } as const;
+  }
+  return {
+    approvalPolicy: "on-request",
+    sandbox: mode === "auto" ? "workspace-write" : "read-only",
+  } as const;
+}
+
+function startCodexRun(event: IpcMainInvokeEvent, request: AgentRunRequest) {
   const executable = requireAgentExecutable("codex");
   const child = spawn(executable, ["app-server", "--stdio"], {
     cwd: request.sourceFolder ?? app.getPath("home"),
@@ -1023,6 +1742,8 @@ function startCodexApprovalRun(
   const parserState: ParserState = {
     response: "",
     finished: false,
+    activityLabels: new Map(),
+    activityIdsByIndex: new Map(),
     stdoutLines: 0,
     unparseableLines: 0,
     eventCounts: {},
@@ -1169,6 +1890,83 @@ function startCodexApprovalRun(
       return;
     }
 
+    if (method === "item/reasoning/summaryTextDelta") {
+      if (
+        typeof params.itemId === "string" &&
+        typeof params.delta === "string"
+      ) {
+        sendActivityDelta(event, request, parserState, {
+          id: params.itemId,
+          kind: "reasoning",
+          label: "Thinking",
+          field: "detail",
+          text: params.delta,
+        });
+      }
+      return;
+    }
+
+    if (
+      method === "item/reasoning/summaryPartAdded" &&
+      typeof params.itemId === "string" &&
+      typeof params.summaryIndex === "number" &&
+      params.summaryIndex > 0
+    ) {
+      sendActivityDelta(event, request, parserState, {
+        id: params.itemId,
+        kind: "reasoning",
+        label: "Thinking",
+        field: "detail",
+        text: "\n\n",
+      });
+      return;
+    }
+
+    if (
+      method === "item/commandExecution/outputDelta" &&
+      typeof params.itemId === "string" &&
+      typeof params.delta === "string"
+    ) {
+      sendActivityDelta(event, request, parserState, {
+        id: params.itemId,
+        kind: "command",
+        label: "Running command",
+        field: "output",
+        text: params.delta,
+      });
+      return;
+    }
+
+    if (
+      method === "item/fileChange/outputDelta" &&
+      typeof params.itemId === "string" &&
+      typeof params.delta === "string"
+    ) {
+      sendActivityDelta(event, request, parserState, {
+        id: params.itemId,
+        kind: "file-change",
+        label: "Editing files",
+        field: "output",
+        text: params.delta,
+      });
+      return;
+    }
+
+    if (
+      method === "item/mcpToolCall/progress" &&
+      typeof params.itemId === "string" &&
+      typeof params.message === "string"
+    ) {
+      sendActivityDelta(event, request, parserState, {
+        id: params.itemId,
+        kind: "tool",
+        label: "Using tool",
+        field: "output",
+        text: `${params.message}\n`,
+      });
+      return;
+    }
+
     if (method === "item/started" || method === "item/completed") {
       const item = asRecord(params.item);
       if (!item) {
@@ -1177,17 +1975,49 @@ function startCodexApprovalRun(
       if (typeof item.id === "string") {
         items.set(item.id, item);
       }
-      const activityLabel = codexActivityLabel(item);
-      if (activityLabel) {
-        sendAgentEvent(event, {
-          runId: request.runId,
-          type: "status",
-          activityId: String(item.id ?? item.type ?? "working"),
-          label: activityLabel,
-          stepType: typeof item.type === "string" ? item.type : "working",
-          state: method === "item/completed" ? "COMPLETED" : "RUNNING",
+      const activity = codexActivityDescriptor(item);
+      if (activity) {
+        sendActivity(event, request, parserState, {
+          id: String(item.id ?? item.type ?? "working"),
+          ...activity,
+          status: codexActivityState(item, method === "item/completed"),
         });
       }
+      return;
+    }
+
+    if (method === "thread/tokenUsage/updated") {
+      const tokenUsage = asRecord(params.tokenUsage);
+      const lastUsage = asRecord(
+        tokenUsage?.last ?? tokenUsage?.lastTokenUsage,
+      );
+      const totalUsage = asRecord(
+        tokenUsage?.total ?? tokenUsage?.totalTokenUsage,
+      );
+      const contextWindow = tokenCount(
+        tokenUsage,
+        "modelContextWindow",
+        "model_context_window",
+      );
+      const processedTokens = tokenCount(
+        totalUsage,
+        "totalTokens",
+        "total_tokens",
+      );
+      sendRecordUsage(
+        event,
+        request,
+        parserState,
+        lastUsage,
+        contextWindow,
+        processedTokens,
+      );
+      return;
+    }
+
+    if (method === "thread/compacted") {
+      // The following token-usage notification carries the compacted context.
+      // Keep the current value until that authoritative replacement arrives.
       return;
     }
 
@@ -1290,9 +2120,8 @@ function startCodexApprovalRun(
     const access = {
       model: request.model ?? null,
       cwd,
-      approvalPolicy: "on-request",
       approvalsReviewer: "user",
-      sandbox: "read-only",
+      ...codexAppServerAccess(request),
     };
     const threadResult = asRecord(
       await requestRpc(
@@ -1309,6 +2138,7 @@ function startCodexApprovalRun(
     sendConversation(event, request, thread.id);
     await requestRpc("turn/start", {
       threadId: thread.id,
+      summary: "concise",
       input: [
         {
           type: "text",
@@ -1368,8 +2198,21 @@ function createRunCommand(request: AgentRunRequest) {
 
   if (provider === "codex") {
     const args = request.conversationId
-      ? [...accessArgs, "exec", "resume", "--json"]
-      : [...accessArgs, "exec", "--json"];
+      ? [
+          ...accessArgs,
+          "-c",
+          'model_reasoning_summary="concise"',
+          "exec",
+          "resume",
+          "--json",
+        ]
+      : [
+          ...accessArgs,
+          "-c",
+          'model_reasoning_summary="concise"',
+          "exec",
+          "--json",
+        ];
     if (request.sourceFolder === undefined) {
       args.push("--skip-git-repo-check");
     }
@@ -1418,45 +2261,13 @@ ipcMain.handle("agent:run", (event, request: AgentRunRequest) => {
     throw new Error("This agent run is already active.");
   }
 
-  if (
-    (request.provider ?? "gemini") === "codex" &&
-    resolveAgentAccessMode("codex", request.accessMode) === "read-only"
-  ) {
-    startCodexApprovalRun(event, request);
+  if ((request.provider ?? "gemini") === "codex") {
+    startCodexRun(event, request);
     return;
   }
 
   const { executable, args } = createRunCommand(request);
-  const provider = request.provider ?? "gemini";
   const cwd = request.sourceFolder ?? app.getPath("home");
-  const canAccessCwd = (mode: number) => {
-    try {
-      fs.accessSync(cwd, mode);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  console.info(`[agent:${request.runId}] Starting agent run.`, {
-    provider,
-    executable,
-    cwd,
-    cwdReadable: canAccessCwd(fs.constants.R_OK),
-    cwdWritable: canAccessCwd(fs.constants.W_OK),
-    model: request.model ?? null,
-    accessMode: resolveAgentAccessMode(provider, request.accessMode),
-    resumedConversation: Boolean(request.conversationId),
-    promptCharacters: request.prompt.length,
-    arguments: args
-      .slice(0, -1)
-      .map((argument, index, values) =>
-        index > 0 &&
-        (values[index - 1] === "--conversation" ||
-          values[index - 1] === "--resume")
-          ? "<conversation-id>"
-          : argument,
-      ),
-  });
 
   const child = spawn(executable, args, {
     cwd,
@@ -1477,6 +2288,8 @@ ipcMain.handle("agent:run", (event, request: AgentRunRequest) => {
   const parserState: ParserState = {
     response: "",
     finished: false,
+    activityLabels: new Map(),
+    activityIdsByIndex: new Map(),
     stdoutLines: 0,
     unparseableLines: 0,
     eventCounts: {},
@@ -1518,17 +2331,7 @@ ipcMain.handle("agent:run", (event, request: AgentRunRequest) => {
     }
 
     activeRuns.delete(request.runId);
-    console.info(`[agent:${request.runId}] Agent process closed.`, {
-      provider,
-      code,
-      cancelled: activeRun.cancelled,
-      parserFinished: parserState.finished,
-      responseCharacters: parserState.response.length,
-      stdoutLines: parserState.stdoutLines,
-      unparseableLines: parserState.unparseableLines,
-      eventCounts: parserState.eventCounts,
-      trailingStderr: stderrBuffer.trim() || null,
-    });
+
     if (activeRun.cancelled) {
       sendAgentEvent(event, { runId: request.runId, type: "cancelled" });
       return;

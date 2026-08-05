@@ -25,11 +25,13 @@ import {
 import { cn } from "@/lib/utils";
 import type {
   AgentAccessMode,
+  AgentActivityKind,
   AgentApprovalDecision,
   AgentEvent,
   AgentModel,
   AgentModelSelection,
   AgentProvider,
+  AgentUsage,
   ChatMessage,
   ChatSession,
   Project,
@@ -46,6 +48,66 @@ const emptyWorkspace: WorkspaceState = {
   activeProjectId: null,
   activeSessionId: null,
 };
+
+const MAX_ACTIVITY_DETAIL_LENGTH = 12_000;
+
+function inferLegacyActivityKind(label: string): AgentActivityKind {
+  const normalized = label.toLowerCase();
+  if (normalized.includes("think") || normalized.includes("reason")) {
+    return "reasoning";
+  }
+  if (normalized.includes("command") || normalized.startsWith("ran ")) {
+    return "command";
+  }
+  if (normalized.includes("edit") || normalized.includes("file")) {
+    return "file-change";
+  }
+  if (normalized.includes("web") || normalized.includes("search")) {
+    return "web-search";
+  }
+  return "other";
+}
+
+function appendActivityText(current: string | undefined, text: string) {
+  const combined = `${current ?? ""}${text}`;
+  if (combined.length <= MAX_ACTIVITY_DETAIL_LENGTH) {
+    return combined;
+  }
+  return `…\n${combined.slice(-MAX_ACTIVITY_DETAIL_LENGTH)}`;
+}
+
+function normalizeUsage(value: unknown): AgentUsage | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const usage = value as Partial<AgentUsage>;
+  const tokenCount = (candidate: unknown) =>
+    typeof candidate === "number" &&
+    Number.isFinite(candidate) &&
+    candidate >= 0
+      ? Math.floor(candidate)
+      : undefined;
+  const inputTokens = tokenCount(usage.inputTokens);
+  const outputTokens = tokenCount(usage.outputTokens);
+  const usedTokens = tokenCount(usage.usedTokens);
+  const contextWindow = tokenCount(usage.contextWindow);
+  if (
+    inputTokens === undefined ||
+    outputTokens === undefined ||
+    usedTokens === undefined ||
+    (contextWindow !== undefined && usedTokens > contextWindow)
+  ) {
+    return undefined;
+  }
+  return {
+    inputTokens,
+    outputTokens,
+    usedTokens,
+    cachedInputTokens: tokenCount(usage.cachedInputTokens) ?? 0,
+    contextWindow,
+    processedTokens: tokenCount(usage.processedTokens),
+  };
+}
 
 function migrateProvider(value: unknown): AgentProvider | undefined {
   if (value === "agy") {
@@ -86,6 +148,7 @@ function loadWorkspace(): WorkspaceState {
         conversationProvider: incompatibleConversation
           ? undefined
           : migrateProvider(legacyConversationProvider),
+        usage: normalizeUsage(session.usage),
         messages: Array.isArray(session.messages)
           ? session.messages.map((message) => {
               const wasInterrupted =
@@ -98,16 +161,23 @@ function loadWorkspace(): WorkspaceState {
                     ? [message.content]
                     : [],
                 activities: Array.isArray(message.activities)
-                  ? message.activities.filter(
-                      (activity) =>
-                        !(
-                          (migrateProvider(legacyProvider) === "codex" ||
-                            migrateProvider(legacyConversationProvider) ===
-                              "codex") &&
-                          activity.id === "item_0" &&
-                          activity.label.toLowerCase() === "error"
-                        ),
-                    )
+                  ? message.activities
+                      .filter(
+                        (activity) =>
+                          !(
+                            (migrateProvider(legacyProvider) === "codex" ||
+                              migrateProvider(legacyConversationProvider) ===
+                                "codex") &&
+                            activity.id === "item_0" &&
+                            activity.label.toLowerCase() === "error"
+                          ),
+                      )
+                      .map((activity) => ({
+                        ...activity,
+                        kind:
+                          activity.kind ??
+                          inferLegacyActivityKind(activity.label),
+                      }))
                   : [],
                 status: wasInterrupted ? "error" : message.status,
                 runId: undefined,
@@ -200,6 +270,11 @@ function updateRun(
       return session;
     }
 
+    if (event.type === "usage") {
+      didChange = true;
+      return { ...session, usage: normalizeUsage(event.usage) };
+    }
+
     const messages = [...session.messages];
     const message = messages[messageIndex];
     if (!message) {
@@ -227,6 +302,35 @@ function updateRun(
       return { ...session, messages };
     }
 
+    if (event.type === "activity-delta") {
+      const currentActivities = message.activities ?? [];
+      const activityIndex = currentActivities.findIndex(
+        (activity) => activity.id === event.activityId,
+      );
+      const activities = [...currentActivities];
+      const currentActivity = activities[activityIndex];
+      const activity = {
+        id: event.activityId,
+        kind: currentActivity?.kind ?? event.kind,
+        label: currentActivity?.label ?? event.label ?? "Working",
+        status: currentActivity?.status ?? ("running" as const),
+        detail: currentActivity?.detail,
+        output: currentActivity?.output,
+        [event.field]: appendActivityText(
+          currentActivity?.[event.field],
+          event.text,
+        ),
+      };
+      if (activityIndex === -1) {
+        activities.push(activity);
+      } else {
+        activities[activityIndex] = activity;
+      }
+      messages[messageIndex] = { ...message, activities };
+      didChange = true;
+      return { ...session, messages };
+    }
+
     if (event.type === "status") {
       const stepType = event.stepType.toLowerCase();
       if (
@@ -237,23 +341,30 @@ function updateRun(
         return session;
       }
 
-      const activityStatus = [
-        "DONE",
-        "COMPLETE",
-        "COMPLETED",
-        "SUCCESS",
-      ].includes(event.state.toUpperCase())
-        ? "complete"
-        : "running";
+      const normalizedState = event.state.toUpperCase();
+      const activityStatus = ["ERROR", "FAILED", "DECLINED"].includes(
+        normalizedState,
+      )
+        ? "error"
+        : ["DONE", "COMPLETE", "COMPLETED", "SUCCESS"].includes(normalizedState)
+          ? "complete"
+          : "running";
       const currentActivities = message.activities ?? [];
       const activityIndex = currentActivities.findIndex(
         (activity) => activity.id === event.activityId,
       );
       const activities = [...currentActivities];
+      const currentActivity = activities[activityIndex];
       const activity = {
         id: event.activityId,
         label: event.label,
         status: activityStatus,
+        kind:
+          event.kind ??
+          currentActivity?.kind ??
+          inferLegacyActivityKind(event.label),
+        detail: event.detail ?? currentActivity?.detail,
+        output: event.output ?? currentActivity?.output,
       } as const;
       if (activityIndex === -1) {
         activities.push(activity);
@@ -285,9 +396,13 @@ function updateRun(
           response === message.content ? message.chunks : [event.response],
         activities: (message.activities ?? []).map((activity) => ({
           ...activity,
-          status: "complete",
+          status:
+            activity.status === "running"
+              ? ("complete" as const)
+              : activity.status,
         })),
         status: "complete",
+        completedAt: Date.now(),
         runId: undefined,
         approval: undefined,
       };
@@ -295,6 +410,7 @@ function updateRun(
       messages[messageIndex] = {
         ...message,
         status: "cancelled",
+        completedAt: Date.now(),
         runId: undefined,
         approval: undefined,
       };
@@ -306,6 +422,7 @@ function updateRun(
           : event.message,
         chunks: [...message.chunks, event.message],
         status: "error",
+        completedAt: Date.now(),
         runId: undefined,
         approval: undefined,
       };
@@ -369,16 +486,6 @@ function ConductorApp() {
 
   useEffect(() => {
     return window.electron.onAgentEvent((event) => {
-      console.info("[agent] Renderer received event.", {
-        runId: event.runId,
-        type: event.type,
-        characters:
-          event.type === "delta"
-            ? event.text.length
-            : event.type === "complete"
-              ? event.response.length
-              : undefined,
-      });
       setWorkspace((current) => updateRun(current, event));
     });
   }, []);
@@ -626,6 +733,11 @@ function ConductorApp() {
           ...pendingSession.session,
           provider: selection.provider,
           model: selection.model,
+          usage:
+            pendingSession.session.provider === selection.provider &&
+            pendingSession.session.model === selection.model
+              ? pendingSession.session.usage
+              : undefined,
         },
       };
       pendingSessionRef.current = nextPending;
@@ -656,6 +768,11 @@ function ConductorApp() {
                     ...session,
                     provider: selection.provider,
                     model: selection.model,
+                    usage:
+                      session.provider === selection.provider &&
+                      session.model === selection.model
+                        ? session.usage
+                        : undefined,
                   }
                 : session,
             )
@@ -670,6 +787,11 @@ function ConductorApp() {
                       ...session,
                       provider: selection.provider,
                       model: selection.model,
+                      usage:
+                        session.provider === selection.provider &&
+                        session.model === selection.model
+                          ? session.usage
+                          : undefined,
                     }
                   : session,
               ),

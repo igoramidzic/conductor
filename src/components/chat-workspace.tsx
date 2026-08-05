@@ -1,16 +1,23 @@
 import {
   AlertCircle,
   ArrowUp,
+  BookOpen,
+  Brain,
+  ChartPie,
   Check,
+  ChevronDown,
   FilePenLine,
   Folder,
+  Globe2,
   ListChecks,
   Plus,
+  Search,
   ShieldCheck,
   ShieldOff,
   ShieldQuestion,
   Square,
   SquareTerminal,
+  Wrench,
   X,
 } from "lucide-react";
 import {
@@ -31,6 +38,11 @@ import {
 import { TerminalPanel } from "@/components/terminal-panel";
 import { Button } from "@/components/ui/button";
 import { Card, CardFooter } from "@/components/ui/card";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   Combobox,
   ComboboxCollection,
@@ -53,6 +65,11 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import { Message, MessageContent } from "@/components/ui/message";
 import {
@@ -68,10 +85,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type {
   AgentAccessMode,
+  AgentActivity,
   AgentApprovalDecision,
   AgentApprovalRequest,
   AgentModel,
   AgentProvider,
+  AgentUsage,
   ChatMessage,
   ChatSession,
   Project,
@@ -186,15 +205,293 @@ function MarkdownResponse({ children }: { children: string }) {
   );
 }
 
+function ActivityIcon({ activity }: { activity: AgentActivity }) {
+  if (activity.status === "running") {
+    return <ThinkingDots />;
+  }
+  if (activity.status === "error") {
+    return <AlertCircle className="size-3.5" />;
+  }
+  if (activity.kind === "reasoning") {
+    return <Brain className="size-3.5" />;
+  }
+  if (activity.kind === "command") {
+    if (activity.label.startsWith("Read ")) {
+      return <BookOpen className="size-3.5" />;
+    }
+    if (activity.label.startsWith("Searched ")) {
+      return <Search className="size-3.5" />;
+    }
+    return <SquareTerminal className="size-3.5" />;
+  }
+  if (activity.kind === "file-change") {
+    return <FilePenLine className="size-3.5" />;
+  }
+  if (activity.kind === "web-search") {
+    return <Globe2 className="size-3.5" />;
+  }
+  if (activity.kind === "tool") {
+    return <Wrench className="size-3.5" />;
+  }
+  return <Check className="size-3.5" />;
+}
+
+function ActivityDetail({ activity }: { activity: AgentActivity }) {
+  const detail = activity.detail?.trim();
+  const output = activity.output?.trim();
+  if (!detail && !output) {
+    return null;
+  }
+
+  if (activity.kind === "reasoning") {
+    return detail ? (
+      <div className="execution-reasoning mt-1.5 max-w-2xl text-[12px] leading-5 text-muted-foreground/90">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{detail}</ReactMarkdown>
+      </div>
+    ) : null;
+  }
+
+  if (activity.kind === "command") {
+    return (
+      <div className="mt-2 min-w-0 overflow-hidden rounded-xl border border-border/80 bg-muted/35">
+        <div className="px-3.5 pt-2.5 text-[11px] font-medium text-muted-foreground">
+          Shell
+        </div>
+        <pre className="execution-detail max-h-72 overflow-auto px-3.5 pt-3 pb-3.5 font-mono text-[11px] leading-[1.65] whitespace-pre-wrap text-foreground/75">
+          {detail ? `$ ${detail}` : ""}
+          {detail && output ? "\n\n" : ""}
+          {output ?? ""}
+        </pre>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2 grid min-w-0 gap-2">
+      {detail ? (
+        <div className="min-w-0">
+          <span className="mb-1 block text-[9px] font-semibold tracking-[0.08em] text-muted-foreground/70 uppercase">
+            {activity.kind === "file-change" ? "Changes" : "Details"}
+          </span>
+          <pre className="execution-detail max-h-44 overflow-auto rounded-md border border-border/70 bg-muted/45 px-2.5 py-2 font-mono text-[10px] leading-[1.55] whitespace-pre-wrap text-foreground/80">
+            {detail}
+          </pre>
+        </div>
+      ) : null}
+      {output ? (
+        <div className="min-w-0">
+          <span className="mb-1 block text-[9px] font-semibold tracking-[0.08em] text-muted-foreground/70 uppercase">
+            Output
+          </span>
+          <pre className="execution-detail max-h-52 overflow-auto rounded-md border border-border/70 bg-muted/30 px-2.5 py-2 font-mono text-[10px] leading-[1.55] whitespace-pre-wrap text-muted-foreground">
+            {output}
+          </pre>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function releaseMessageScrollerAnchor(element: HTMLElement) {
+  const viewport = element
+    .closest('[data-slot="message-scroller"]')
+    ?.querySelector<HTMLElement>('[data-slot="message-scroller-viewport"]');
+  viewport?.dispatchEvent(
+    new WheelEvent("wheel", { bubbles: true, deltaY: 0 }),
+  );
+}
+
+function ToolCall({ activity }: { activity: AgentActivity }) {
+  const hasDetails = Boolean(
+    activity.detail?.trim() || activity.output?.trim(),
+  );
+
+  if (!hasDetails) {
+    return (
+      <Marker
+        role="status"
+        className={cn(
+          "min-w-0 gap-2 py-0.5 text-[13px] leading-5 text-muted-foreground transition-colors hover:text-foreground motion-reduce:transition-none",
+          activity.status === "error" &&
+            "text-destructive hover:text-destructive",
+        )}
+      >
+        <MarkerIcon>
+          <ActivityIcon activity={activity} />
+        </MarkerIcon>
+        <MarkerContent
+          className={cn(
+            "truncate font-medium",
+            activity.status === "running" && "shimmer",
+          )}
+        >
+          {activity.label}
+          {activity.status === "running" ? "…" : ""}
+        </MarkerContent>
+      </Marker>
+    );
+  }
+
+  return (
+    <Collapsible defaultOpen={false} className="min-w-0">
+      <CollapsibleTrigger
+        type="button"
+        className={cn(
+          "group/tool-call -ml-1 block max-w-full rounded-md px-1 py-0.5 text-left text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 motion-reduce:transition-none",
+          activity.status === "error" &&
+            "text-destructive hover:text-destructive",
+        )}
+        onClick={(event) => releaseMessageScrollerAnchor(event.currentTarget)}
+      >
+        <Marker
+          role="status"
+          className="w-auto max-w-full min-w-0 gap-2 text-[13px] leading-5 text-inherit"
+        >
+          <MarkerIcon>
+            <ActivityIcon activity={activity} />
+          </MarkerIcon>
+          <MarkerContent
+            className={cn(
+              "truncate font-medium",
+              activity.status === "running" && "shimmer",
+            )}
+          >
+            {activity.label}
+            {activity.status === "running" ? "…" : ""}
+          </MarkerContent>
+          <ChevronDown className="size-3.5 shrink-0 opacity-0 transition-[opacity,transform] duration-200 group-hover/tool-call:opacity-100 group-focus-visible/tool-call:opacity-100 group-data-[panel-open]/tool-call:rotate-180 group-data-[panel-open]/tool-call:opacity-100 motion-reduce:transition-none" />
+        </Marker>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="execution-collapse execution-tool-detail min-w-0 pl-6">
+        <ActivityDetail activity={activity} />
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function activitySummary(activities: AgentActivity[]) {
+  const hasFileChanges = activities.some(
+    (activity) => activity.kind === "file-change",
+  );
+  const hasReads = activities.some(
+    (activity) =>
+      activity.kind === "command" && activity.label.startsWith("Read "),
+  );
+  const hasFileLists = activities.some(
+    (activity) =>
+      activity.kind === "command" && activity.label.startsWith("Listed "),
+  );
+  const hasProjectSearches = activities.some(
+    (activity) =>
+      activity.kind === "command" && activity.label.startsWith("Searched "),
+  );
+  const hasWebSearches = activities.some(
+    (activity) => activity.kind === "web-search",
+  );
+  const commandCount = activities.filter(
+    (activity) =>
+      activity.kind === "command" &&
+      !activity.label.startsWith("Read ") &&
+      !activity.label.startsWith("Listed ") &&
+      !activity.label.startsWith("Searched "),
+  ).length;
+  const toolCount = activities.filter(
+    (activity) => activity.kind === "tool" || activity.kind === "other",
+  ).length;
+  const phrases = [
+    hasFileChanges ? "edited files" : null,
+    hasReads ? "read files" : null,
+    hasFileLists ? "listed files" : null,
+    hasProjectSearches ? "searched the project" : null,
+    hasWebSearches ? "searched the web" : null,
+    toolCount > 0 ? `used ${toolCount === 1 ? "a tool" : "tools"}` : null,
+    commandCount > 0
+      ? `ran ${commandCount === 1 ? "a command" : "commands"}`
+      : null,
+  ].filter((phrase): phrase is string => phrase !== null);
+  const summary = phrases.join(", ") || "worked on the request";
+  return `${summary[0]?.toUpperCase() ?? ""}${summary.slice(1)}`;
+}
+
+function ActivitySummaryIcon({ activities }: { activities: AgentActivity[] }) {
+  if (activities.some((activity) => activity.kind === "file-change")) {
+    return <FilePenLine className="size-3.5" />;
+  }
+  if (activities.some((activity) => activity.kind === "command")) {
+    return <SquareTerminal className="size-3.5" />;
+  }
+  if (activities.some((activity) => activity.kind === "web-search")) {
+    return <Globe2 className="size-3.5" />;
+  }
+  return <Wrench className="size-3.5" />;
+}
+
+function ExecutionTrace({
+  message,
+  activities,
+}: {
+  message: ChatMessage;
+  activities: AgentActivity[];
+}) {
+  const isActive =
+    message.status === "thinking" || message.status === "streaming";
+  const reasoningActivities = activities.filter(
+    (activity) => activity.kind === "reasoning",
+  );
+  const actionActivities = activities.filter(
+    (activity) => activity.kind !== "reasoning",
+  );
+  const currentReasoning = [...reasoningActivities].reverse()[0];
+
+  if (actionActivities.length === 0) {
+    return isActive ? (
+      <Marker role="status" className="execution-activity w-fit text-xs">
+        <MarkerIcon>
+          <ThinkingDots />
+        </MarkerIcon>
+        <MarkerContent className="shimmer">
+          {currentReasoning?.label ??
+            (message.status === "streaming" ? "Writing response" : "Thinking")}
+          …
+        </MarkerContent>
+      </Marker>
+    ) : null;
+  }
+
+  return (
+    <Collapsible defaultOpen={false} className="execution-activity min-w-0">
+      <CollapsibleTrigger
+        type="button"
+        className="group/execution-trigger -ml-1 block max-w-full rounded-md px-1 py-0.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        onClick={(event) => releaseMessageScrollerAnchor(event.currentTarget)}
+      >
+        <Marker className="w-auto max-w-full gap-2 text-[13px] leading-5">
+          <MarkerIcon>
+            <ActivitySummaryIcon activities={actionActivities} />
+          </MarkerIcon>
+          <MarkerContent className={cn("truncate", isActive && "shimmer")}>
+            {activitySummary(actionActivities)}
+            {isActive ? "…" : ""}
+          </MarkerContent>
+          <ChevronDown className="size-3.5 shrink-0 opacity-0 transition-[opacity,transform] duration-200 group-hover/execution-trigger:opacity-100 group-focus-visible/execution-trigger:opacity-100 group-data-[panel-open]/execution-trigger:rotate-180 group-data-[panel-open]/execution-trigger:opacity-100 motion-reduce:transition-none" />
+        </Marker>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="execution-collapse execution-trace min-w-0 pl-0.5">
+        <div className="grid min-w-0 gap-0 pt-1.5 pb-0.5">
+          {actionActivities.map((activity) => (
+            <ToolCall key={activity.id} activity={activity} />
+          ))}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 function AgentResponse({ message }: { message: ChatMessage }) {
   const activities = (message.activities ?? []).filter(
     (activity) =>
       !(activity.id === "item_0" && activity.label.toLowerCase() === "error"),
   );
-  const hasRunningActivity = activities.some(
-    (activity) => activity.status === "running",
-  );
-  const showThinking = message.status === "thinking" && !hasRunningActivity;
   const animatedChunks = useMemo(
     () => splitResponseChunks(message.chunks),
     [message.chunks],
@@ -203,32 +500,7 @@ function AgentResponse({ message }: { message: ChatMessage }) {
   return (
     <Message>
       <MessageContent className="gap-2.5">
-        {activities.map((activity) => (
-          <Marker key={activity.id} role="status" className="w-fit text-xs">
-            <MarkerIcon>
-              {activity.status === "running" ? (
-                <ThinkingDots />
-              ) : (
-                <Check className="size-3.5" />
-              )}
-            </MarkerIcon>
-            <MarkerContent
-              className={activity.status === "running" ? "shimmer" : undefined}
-            >
-              {activity.label}
-              {activity.status === "running" ? "…" : ""}
-            </MarkerContent>
-          </Marker>
-        ))}
-
-        {showThinking ? (
-          <Marker role="status" className="w-fit text-xs">
-            <MarkerIcon>
-              <ThinkingDots />
-            </MarkerIcon>
-            <MarkerContent className="shimmer">Thinking…</MarkerContent>
-          </Marker>
-        ) : null}
+        <ExecutionTrace message={message} activities={activities} />
 
         {message.status === "error" ? (
           <Marker
@@ -805,12 +1077,98 @@ function ApprovalPrompt({
   );
 }
 
+const compactTokenFormatter = new Intl.NumberFormat(undefined, {
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+
+function ContextUsageIndicator({
+  usage,
+  contextWindow,
+}: {
+  usage?: AgentUsage;
+  contextWindow?: number;
+}) {
+  const maxTokens = usage?.contextWindow ?? contextWindow;
+  const usedTokens = usage?.usedTokens ?? 0;
+  const ratio = maxTokens ? usedTokens / maxTokens : 0;
+  const percentage = Math.min(100, Math.round(Math.max(0, ratio) * 100));
+  const fillPercentage = Math.min(100, Math.max(0, ratio * 100));
+  const summary = maxTokens
+    ? `${compactTokenFormatter.format(usedTokens)} of ${compactTokenFormatter.format(maxTokens)} tokens used`
+    : "Context usage unavailable";
+
+  return (
+    <HoverCard>
+      <HoverCardTrigger
+        delay={180}
+        closeDelay={100}
+        render={
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="size-7 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground data-popup-open:bg-muted data-popup-open:text-foreground"
+            aria-label={summary}
+          />
+        }
+      >
+        {maxTokens && usedTokens > 0 ? (
+          <span
+            className="size-3.5 rounded-full ring-1 ring-foreground/15 ring-inset"
+            style={{
+              background: `conic-gradient(currentColor ${fillPercentage}%, color-mix(in oklab, currentColor 16%, transparent) 0)`,
+            }}
+            aria-hidden="true"
+          />
+        ) : (
+          <ChartPie className="size-3.5" aria-hidden="true" />
+        )}
+      </HoverCardTrigger>
+      <HoverCardContent
+        side="top"
+        align="end"
+        sideOffset={8}
+        className="w-72 p-3.5"
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-xs font-medium">Context usage</p>
+            <p className="mt-1 text-lg leading-none font-semibold tracking-[-0.025em] tabular-nums">
+              {compactTokenFormatter.format(usedTokens)}
+              {maxTokens ? (
+                <span className="font-normal text-muted-foreground">
+                  {" "}
+                  / {compactTokenFormatter.format(maxTokens)}
+                </span>
+              ) : null}
+            </p>
+          </div>
+          <span className="rounded-md bg-muted px-1.5 py-1 text-[10px] leading-none font-medium text-muted-foreground tabular-nums">
+            {maxTokens ? `${percentage}%` : "—"}
+          </span>
+        </div>
+
+        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted">
+          <div
+            className="h-full rounded-full bg-foreground transition-[width] duration-300 motion-reduce:transition-none"
+            style={{ width: `${fillPercentage}%` }}
+          />
+        </div>
+      </HoverCardContent>
+    </HoverCard>
+  );
+}
+
 function Composer({
   isRunning,
   activeRunId,
   approval,
   provider,
   model,
+  usage,
+  contextWindow,
+  hasAgentSession,
   models,
   modelsLoading,
   accessMode,
@@ -830,6 +1188,9 @@ function Composer({
   approval?: AgentApprovalRequest;
   provider?: AgentProvider;
   model?: string;
+  usage?: AgentUsage;
+  contextWindow?: number;
+  hasAgentSession: boolean;
   models: AgentModel[];
   modelsLoading: boolean;
   accessMode: AgentAccessMode;
@@ -912,6 +1273,12 @@ function Composer({
                   onChange={onAccessModeChange}
                 />
                 <div className="ml-auto flex min-w-0 items-center gap-1">
+                  {hasAgentSession ? (
+                    <ContextUsageIndicator
+                      usage={usage}
+                      contextWindow={contextWindow}
+                    />
+                  ) : null}
                   <ModelPicker
                     provider={provider}
                     model={model}
@@ -991,6 +1358,11 @@ function SessionView({
         message.role === "assistant" &&
         (message.status === "thinking" || message.status === "streaming"),
     );
+  const contextWindow = availableModels.find(
+    (availableModel) =>
+      availableModel.provider === (session.provider ?? "gemini") &&
+      availableModel.model === session.model,
+  )?.contextWindow;
 
   return (
     <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden">
@@ -1036,6 +1408,9 @@ function SessionView({
         approval={activeMessage?.approval}
         provider={session.provider}
         model={session.model}
+        usage={session.usage}
+        contextWindow={contextWindow}
+        hasAgentSession={Boolean(session.conversationId)}
         models={availableModels}
         modelsLoading={modelsLoading}
         accessMode={accessMode}

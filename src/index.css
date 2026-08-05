@@ -207,6 +207,54 @@
   animation: response-chunk-in 180ms ease-out both;
 }
 
+.execution-collapse {
+  height: var(--collapsible-panel-height);
+  overflow: hidden;
+  opacity: 1;
+  transition:
+    height 220ms cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 150ms ease-out;
+}
+
+.execution-collapse[data-starting-style],
+.execution-collapse[data-ending-style] {
+  height: 0;
+  opacity: 0;
+}
+
+.execution-node {
+  box-shadow: 0 0 0 4px var(--background);
+}
+
+.execution-detail {
+  scrollbar-color: color-mix(in srgb, var(--muted-foreground) 28%, transparent)
+    transparent;
+}
+
+.execution-activity,
+.execution-activity * {
+  user-select: none;
+}
+
+.execution-reasoning > :first-child {
+  margin-top: 0;
+}
+
+.execution-reasoning > :last-child {
+  margin-bottom: 0;
+}
+
+.execution-reasoning p,
+.execution-reasoning ul,
+.execution-reasoning ol {
+  margin-block: 0.35rem;
+}
+
+.execution-reasoning ul,
+.execution-reasoning ol {
+  padding-left: 1.15rem;
+}
+
 .new-session-project-card {
   opacity: 0;
   transform: translateY(2rem) scale(0.985);
@@ -615,6 +663,10 @@
   .response-chunk,
   .new-session-project-card[data-visible="true"] {
     animation: none;
+  }
+
+  .execution-collapse {
+    transition: none;
   }
 
   .new-session-project-card {

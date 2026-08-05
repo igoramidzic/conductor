@@ -7,10 +7,21 @@ export type MessageStatus =
   | "cancelled"
   | "error";
 
+export type AgentActivityKind =
+  | "reasoning"
+  | "command"
+  | "file-change"
+  | "web-search"
+  | "tool"
+  | "other";
+
 export type AgentActivity = {
   id: string;
+  kind: AgentActivityKind;
   label: string;
-  status: "running" | "complete";
+  status: "running" | "complete" | "error";
+  detail?: string;
+  output?: string;
 };
 
 export type AgentApprovalRequest = {
@@ -55,6 +66,7 @@ export type AgentModel = {
   model: string;
   label: string;
   group: string;
+  contextWindow?: number;
 };
 
 export type AgentModelSelection = Pick<AgentModel, "provider" | "model">;
@@ -67,8 +79,18 @@ export type ChatMessage = {
   createdAt: number;
   status: MessageStatus;
   activities: AgentActivity[];
+  completedAt?: number;
   runId?: string;
   approval?: AgentApprovalRequest;
+};
+
+export type AgentUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  usedTokens: number;
+  contextWindow?: number;
+  processedTokens?: number;
 };
 
 export type ChatSession = {
@@ -80,6 +102,7 @@ export type ChatSession = {
   model?: string;
   conversationId?: string;
   conversationProvider?: AgentProvider;
+  usage?: AgentUsage;
   messages: ChatMessage[];
 };
 
@@ -176,11 +199,24 @@ export type AgentEvent =
       type: "status";
       activityId: string;
       label: string;
+      kind?: AgentActivityKind;
+      detail?: string;
+      output?: string;
       stepType: string;
       state: string;
     }
+  | {
+      runId: string;
+      type: "activity-delta";
+      activityId: string;
+      kind: AgentActivityKind;
+      label?: string;
+      field: "detail" | "output";
+      text: string;
+    }
   | { runId: string; type: "approval"; approval: AgentApprovalRequest }
   | { runId: string; type: "approval-resolved"; approvalId: string }
+  | { runId: string; type: "usage"; usage: AgentUsage }
   | { runId: string; type: "delta"; text: string }
   | { runId: string; type: "complete"; response: string }
   | { runId: string; type: "cancelled" }
