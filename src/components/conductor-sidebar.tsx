@@ -198,10 +198,12 @@ function SessionRow({
 function SidebarSectionRow({
   label,
   actionLabel,
+  active = false,
   onAction,
 }: {
   label: string;
   actionLabel: string;
+  active?: boolean;
   onAction: () => void;
 }) {
   return (
@@ -216,6 +218,7 @@ function SidebarSectionRow({
               data-sidebar-action-trigger="true"
               data-sidebar-section-trigger="true"
               className="h-8 text-[13px] font-medium"
+              isActive={active}
             />
           }
         >
@@ -420,6 +423,7 @@ export function ConductorSidebar({
             <SidebarSectionRow
               label="Recents"
               actionLabel="New chat"
+              active={pendingProjectId === null}
               onAction={onCreateRecentChat}
             />
 
