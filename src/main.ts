@@ -649,7 +649,82 @@ function assertApprovalResponse(
 type ParserState = {
   response: string;
   finished: boolean;
+  stdoutLines: number;
+  unparseableLines: number;
+  eventCounts: Record<string, number>;
 };
+
+const DIAGNOSTIC_STRING_FIELDS = new Set([
+  "event",
+  "type",
+  "subtype",
+  "step_type",
+  "state",
+  "status",
+]);
+
+function summarizeStreamValue(value: unknown, key = "", depth = 0): unknown {
+  if (typeof value === "string") {
+    return DIAGNOSTIC_STRING_FIELDS.has(key)
+      ? value
+      : `<string:${value.length}>`;
+  }
+  if (
+    value === null ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return `<array:${value.length}>`;
+  }
+  if (typeof value !== "object") {
+    return `<${typeof value}>`;
+  }
+
+  const record = value as Record<string, unknown>;
+  if (depth >= 2) {
+    return { keys: Object.keys(record) };
+  }
+  return Object.fromEntries(
+    Object.entries(record).map(([entryKey, entryValue]) => [
+      entryKey,
+      summarizeStreamValue(entryValue, entryKey, depth + 1),
+    ]),
+  );
+}
+
+function logAgentStreamLine(
+  request: AgentRunRequest,
+  state: ParserState,
+  line: string,
+) {
+  state.stdoutLines += 1;
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    state.unparseableLines += 1;
+    console.warn(`[agent:${request.runId}] Non-JSON stdout line.`, {
+      line: state.stdoutLines,
+      characters: line.length,
+    });
+    return;
+  }
+
+  const discriminator = [payload.event, payload.type, payload.method].find(
+    (value) => typeof value === "string",
+  );
+  const eventName =
+    typeof discriminator === "string" ? discriminator : "unknown";
+  state.eventCounts[eventName] = (state.eventCounts[eventName] ?? 0) + 1;
+  console.info(`[agent:${request.runId}] stdout event.`, {
+    line: state.stdoutLines,
+    event: eventName,
+    shape: summarizeStreamValue(payload),
+  });
+}
 
 function sendConversation(
   event: IpcMainInvokeEvent,
@@ -1006,7 +1081,13 @@ function startCodexApprovalRun(
   activeRuns.set(request.runId, activeRun);
   sendAgentEvent(event, { runId: request.runId, type: "started" });
 
-  const parserState: ParserState = { response: "", finished: false };
+  const parserState: ParserState = {
+    response: "",
+    finished: false,
+    stdoutLines: 0,
+    unparseableLines: 0,
+    eventCounts: {},
+  };
   const pendingRpcRequests = new Map<string | number, PendingRpcRequest>();
   const items = new Map<string, JsonRecord>();
   let nextRequestId = 1;
@@ -1314,6 +1395,7 @@ function parseAgentLine(
   state: ParserState,
   line: string,
 ) {
+  logAgentStreamLine(request, state, line);
   const provider = request.provider ?? "agy";
   if (provider === "claude") {
     parseClaudeLine(event, request, state, line);
@@ -1407,9 +1489,37 @@ ipcMain.handle("agent:run", (event, request: AgentRunRequest) => {
   }
 
   const { executable, args } = createRunCommand(request);
+  const provider = request.provider ?? "agy";
+  const cwd = request.sourceFolder ?? app.getPath("home");
+  const canAccessCwd = (mode: number) => {
+    try {
+      fs.accessSync(cwd, mode);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  console.info(`[agent:${request.runId}] Starting agent run.`, {
+    provider,
+    executable,
+    cwd,
+    cwdReadable: canAccessCwd(fs.constants.R_OK),
+    cwdWritable: canAccessCwd(fs.constants.W_OK),
+    model: request.model ?? null,
+    accessMode: resolveAgentAccessMode(provider, request.accessMode),
+    resumedConversation: Boolean(request.conversationId),
+    promptCharacters: request.prompt.length,
+    arguments: args
+      .slice(0, -1)
+      .map((argument, index, values) =>
+        index > 0 && values[index - 1] === "--conversation"
+          ? "<conversation-id>"
+          : argument,
+      ),
+  });
 
   const child = spawn(executable, args, {
-    cwd: request.sourceFolder ?? app.getPath("home"),
+    cwd,
     env: process.env,
     stdio: "pipe",
   });
@@ -1424,7 +1534,13 @@ ipcMain.handle("agent:run", (event, request: AgentRunRequest) => {
 
   let stdoutBuffer = "";
   let stderrBuffer = "";
-  const parserState: ParserState = { response: "", finished: false };
+  const parserState: ParserState = {
+    response: "",
+    finished: false,
+    stdoutLines: 0,
+    unparseableLines: 0,
+    eventCounts: {},
+  };
 
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk: string) => {
@@ -1442,6 +1558,11 @@ ipcMain.handle("agent:run", (event, request: AgentRunRequest) => {
   });
 
   child.on("error", (error) => {
+    console.error(`[agent:${request.runId}] Agent process failed to start.`, {
+      message: error.message,
+      executable,
+      cwd,
+    });
     activeRuns.delete(request.runId);
     parserState.finished = true;
     sendAgentEvent(event, {
@@ -1457,6 +1578,17 @@ ipcMain.handle("agent:run", (event, request: AgentRunRequest) => {
     }
 
     activeRuns.delete(request.runId);
+    console.info(`[agent:${request.runId}] Agent process closed.`, {
+      provider,
+      code,
+      cancelled: activeRun.cancelled,
+      parserFinished: parserState.finished,
+      responseCharacters: parserState.response.length,
+      stdoutLines: parserState.stdoutLines,
+      unparseableLines: parserState.unparseableLines,
+      eventCounts: parserState.eventCounts,
+      trailingStderr: stderrBuffer.trim() || null,
+    });
     if (activeRun.cancelled) {
       sendAgentEvent(event, { runId: request.runId, type: "cancelled" });
       return;
@@ -1474,6 +1606,9 @@ ipcMain.handle("agent:run", (event, request: AgentRunRequest) => {
         message: details || `The agent exited with code ${code ?? "unknown"}.`,
       });
     } else if (code === 0 && !parserState.finished) {
+      console.warn(
+        `[agent:${request.runId}] Process exited successfully without a recognized terminal result; completing with ${parserState.response.length} accumulated response characters.`,
+      );
       sendComplete(event, request, parserState);
     }
   });

@@ -320,6 +320,16 @@ function ConductorApp() {
 
   useEffect(() => {
     return window.electron.onAgentEvent((event) => {
+      console.info("[agent] Renderer received event.", {
+        runId: event.runId,
+        type: event.type,
+        characters:
+          event.type === "delta"
+            ? event.text.length
+            : event.type === "complete"
+              ? event.response.length
+              : undefined,
+      });
       setWorkspace((current) => updateRun(current, event));
     });
   }, []);
@@ -778,6 +788,7 @@ function ConductorApp() {
         conversationId,
       })
       .catch((error: unknown) => {
+        console.error(`[agent:${runId}] Renderer failed to start run.`, error);
         setWorkspace((current) =>
           updateRun(current, {
             runId,
