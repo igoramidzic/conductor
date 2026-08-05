@@ -346,15 +346,15 @@ function ModelPicker({
   const selectedModel = model
     ? (models.find(
         (availableModel) =>
-          availableModel.provider === (provider ?? "agy") &&
+          availableModel.provider === (provider ?? "gemini") &&
           availableModel.model === model,
       ) ?? {
-        provider: provider ?? "agy",
+        provider: provider ?? "gemini",
         model,
         label: model,
         group: provider === "codex" ? "Codex" : "Other",
       })
-    : (models.find((availableModel) => availableModel.provider === "agy") ??
+    : (models.find((availableModel) => availableModel.provider === "gemini") ??
       models[0] ??
       null);
 
@@ -909,7 +909,7 @@ function Composer({
               />
               <CardFooter className="min-h-10 justify-between gap-2 rounded-b-xl border-0 bg-card px-2.5 py-1.5">
                 <AccessModePicker
-                  provider={provider ?? "agy"}
+                  provider={provider ?? "gemini"}
                   mode={accessMode}
                   onChange={onAccessModeChange}
                 />

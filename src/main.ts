@@ -292,7 +292,7 @@ const AGENT_EXECUTABLES: Record<
   AgentProvider,
   { command: string; environmentVariable: string }
 > = {
-  agy: { command: "agy", environmentVariable: "AGY_PATH" },
+  gemini: { command: "gemini", environmentVariable: "GEMINI_PATH" },
   claude: { command: "claude", environmentVariable: "CLAUDE_PATH" },
   codex: { command: "codex", environmentVariable: "CODEX_PATH" },
 };
@@ -337,98 +337,23 @@ function requireAgentExecutable(provider: AgentProvider) {
   return executable;
 }
 
-function capitalize(value: string) {
-  return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
-function formatRuntimeModelName(model: string) {
-  const gemini = model.match(
-    /^gemini-(\d+(?:\.\d+)?)-([a-z0-9]+)(?:-(high|medium|low))?$/i,
-  );
-  if (gemini) {
-    const [, version, variant, effort] = gemini;
-    return `Gemini ${version} ${capitalize(variant ?? "")}${
-      effort ? ` · ${capitalize(effort)}` : ""
-    }`;
-  }
-
-  return model
-    .split("-")
-    .map((part) => capitalize(part))
-    .join(" ");
-}
-
-function readRuntimeModels() {
-  const executable = findAgentExecutable("agy");
+function readGeminiModels(): AgentModel[] {
+  const executable = findAgentExecutable("gemini");
   if (!executable) {
-    return Promise.resolve<AgentModel[]>([]);
+    return [];
   }
 
-  return new Promise<AgentModel[]>((resolve, reject) => {
-    const child = spawn(executable, ["models"], {
-      env: process.env,
-      stdio: "pipe",
-    });
-    child.stdin.end();
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-
-    const finish = (callback: () => void) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timeout);
-      callback();
-    };
-    const timeout = setTimeout(() => {
-      child.kill("SIGTERM");
-      finish(() => reject(new Error("Model discovery timed out.")));
-    }, 30_000);
-
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => {
-      stderr = `${stderr}${chunk}`.slice(-4_000);
-    });
-    child.on("error", (error) => {
-      finish(() =>
-        reject(
-          new Error(`Could not discover available models: ${error.message}`),
-        ),
-      );
-    });
-    child.on("close", (code) => {
-      finish(() => {
-        if (code !== 0) {
-          reject(
-            new Error(
-              stderr.trim() ||
-                `Model discovery exited with code ${code ?? "unknown"}.`,
-            ),
-          );
-          return;
-        }
-
-        const models = stdout
-          .split(/\r?\n/)
-          .map((line) => line.trim().replace(/^[*-]\s+/, ""))
-          .filter((line) => MODEL_ID_PATTERN.test(line))
-          .filter((model, index, values) => values.indexOf(model) === index)
-          .map((model) => ({
-            provider: "agy" as const,
-            model,
-            label: formatRuntimeModelName(model),
-            group: model.startsWith("gemini-") ? "Gemini" : "Other",
-          }));
-        resolve(models);
-      });
-    });
-  });
+  return [
+    { provider: "gemini", model: "auto", label: "Auto", group: "Gemini" },
+    { provider: "gemini", model: "pro", label: "Pro", group: "Gemini" },
+    { provider: "gemini", model: "flash", label: "Flash", group: "Gemini" },
+    {
+      provider: "gemini",
+      model: "flash-lite",
+      label: "Flash Lite",
+      group: "Gemini",
+    },
+  ];
 }
 
 function readClaudeModels(): AgentModel[] {
@@ -538,18 +463,11 @@ let availableModelsPromise: Promise<AgentModel[]> | undefined;
 
 function listAvailableModels() {
   if (!availableModelsPromise) {
-    availableModelsPromise = readRuntimeModels()
-      .catch(() => [])
-      .then((runtimeModels) => [
-        ...readCodexModels(),
-        ...readClaudeModels(),
-        ...runtimeModels.filter(
-          (model) =>
-            !(
-              model.model.startsWith("claude-") && findAgentExecutable("claude")
-            ),
-        ),
-      ]);
+    availableModelsPromise = Promise.resolve([
+      ...readGeminiModels(),
+      ...readCodexModels(),
+      ...readClaudeModels(),
+    ]);
   }
   return availableModelsPromise;
 }
@@ -597,7 +515,7 @@ function assertRunRequest(request: AgentRunRequest) {
 
   if (
     request.provider !== undefined &&
-    !(["agy", "claude", "codex"] as const).includes(request.provider)
+    !(["gemini", "claude", "codex"] as const).includes(request.provider)
   ) {
     throw new Error("Invalid agent provider.");
   }
@@ -609,7 +527,7 @@ function assertRunRequest(request: AgentRunRequest) {
     throw new Error("Invalid model identifier.");
   }
 
-  const provider = request.provider ?? "agy";
+  const provider = request.provider ?? "gemini";
   if (
     request.accessMode !== undefined &&
     (typeof request.accessMode !== "string" ||
@@ -649,6 +567,7 @@ function assertApprovalResponse(
 type ParserState = {
   response: string;
   finished: boolean;
+  lastError?: string;
   stdoutLines: number;
   unparseableLines: number;
   eventCounts: Record<string, number>;
@@ -735,7 +654,7 @@ function sendConversation(
     runId: request.runId,
     type: "conversation",
     conversationId,
-    provider: request.provider ?? "agy",
+    provider: request.provider ?? "gemini",
   });
 }
 
@@ -766,7 +685,7 @@ function sendComplete(
   });
 }
 
-function parseRuntimeLine(
+function parseGeminiLine(
   event: IpcMainInvokeEvent,
   request: AgentRunRequest,
   state: ParserState,
@@ -783,60 +702,67 @@ function parseRuntimeLine(
     return;
   }
 
-  if (payload.event === "init") {
-    const conversationId = payload.conversation_id;
+  if (payload.type === "init") {
+    const conversationId = payload.session_id;
     if (typeof conversationId === "string") {
       sendConversation(event, request, conversationId);
     }
     return;
   }
 
-  if (payload.event === "step_update") {
-    const update = payload.step_update as Record<string, unknown> | undefined;
-    if (!update) {
-      return;
-    }
+  if (
+    payload.type === "message" &&
+    payload.role === "assistant" &&
+    typeof payload.content === "string"
+  ) {
+    sendDelta(event, request, state, payload.content);
+    return;
+  }
 
-    const text = update.text_delta;
-    if (typeof text === "string" && text.length > 0) {
-      sendDelta(event, request, state, text);
-      return;
-    }
-
-    const stepType =
-      typeof update.step_type === "string" ? update.step_type : "working";
-    const toolCall = update.tool_call as Record<string, unknown> | undefined;
-    const tool = update.tool as Record<string, unknown> | undefined;
-    const rawLabel = [
-      update.tool_name,
-      toolCall?.name,
-      toolCall?.tool_name,
-      tool?.name,
-      update.name,
-    ].find((value) => typeof value === "string") as string | undefined;
-    const label = (rawLabel ?? stepType)
-      .replace(/[_-]+/g, " ")
-      .replace(/\b\w/g, (character) => character.toUpperCase());
-
+  if (payload.type === "tool_use" && typeof payload.tool_name === "string") {
     sendAgentEvent(event, {
       runId: request.runId,
       type: "status",
-      activityId: String(update.step_index ?? stepType),
-      label,
-      stepType,
-      state: typeof update.state === "string" ? update.state : "RUNNING",
+      activityId: String(payload.tool_id ?? payload.tool_name),
+      label: payload.tool_name.replace(/[_-]+/g, " "),
+      stepType: "tool_use",
+      state: "RUNNING",
     });
     return;
   }
 
-  if (payload.event === "result") {
-    const result = payload.result as Record<string, unknown> | undefined;
-    sendComplete(
-      event,
-      request,
-      state,
-      typeof result?.response === "string" ? result.response : state.response,
-    );
+  if (payload.type === "tool_result") {
+    sendAgentEvent(event, {
+      runId: request.runId,
+      type: "status",
+      activityId: String(payload.tool_id ?? "tool"),
+      label: "Tool",
+      stepType: "tool_use",
+      state: payload.status === "success" ? "COMPLETED" : "ERROR",
+    });
+    return;
+  }
+
+  if (payload.type === "error" && typeof payload.message === "string") {
+    state.lastError = payload.message;
+    return;
+  }
+
+  if (payload.type === "result") {
+    if (String(payload.status).toLowerCase() === "error") {
+      const error = payload.error as Record<string, unknown> | undefined;
+      state.finished = true;
+      sendAgentEvent(event, {
+        runId: request.runId,
+        type: "error",
+        message:
+          typeof error?.message === "string"
+            ? error.message
+            : (state.lastError ?? "Gemini stopped before finishing."),
+      });
+      return;
+    }
+    sendComplete(event, request, state);
   }
 }
 
@@ -1396,18 +1322,18 @@ function parseAgentLine(
   line: string,
 ) {
   logAgentStreamLine(request, state, line);
-  const provider = request.provider ?? "agy";
+  const provider = request.provider ?? "gemini";
   if (provider === "claude") {
     parseClaudeLine(event, request, state, line);
   } else if (provider === "codex") {
     parseCodexLine(event, request, state, line);
   } else {
-    parseRuntimeLine(event, request, state, line);
+    parseGeminiLine(event, request, state, line);
   }
 }
 
 function createRunCommand(request: AgentRunRequest) {
-  const provider = request.provider ?? "agy";
+  const provider = request.provider ?? "gemini";
   const executable = requireAgentExecutable(provider);
   const accessArgs = getAgentAccessArgs(provider, request.accessMode);
 
@@ -1451,11 +1377,13 @@ function createRunCommand(request: AgentRunRequest) {
   if (request.model) {
     args.push("--model", request.model);
   }
-  args.push("--print");
   if (request.conversationId) {
-    args.push("--conversation", request.conversationId);
+    args.push("--resume", request.conversationId);
   }
-  args.push(request.prompt);
+  if (request.sourceFolder) {
+    args.push("--skip-trust");
+  }
+  args.push("--prompt", request.prompt);
   return { executable, args };
 }
 
@@ -1481,7 +1409,7 @@ ipcMain.handle("agent:run", (event, request: AgentRunRequest) => {
   }
 
   if (
-    (request.provider ?? "agy") === "codex" &&
+    (request.provider ?? "gemini") === "codex" &&
     resolveAgentAccessMode("codex", request.accessMode) === "read-only"
   ) {
     startCodexApprovalRun(event, request);
@@ -1489,7 +1417,7 @@ ipcMain.handle("agent:run", (event, request: AgentRunRequest) => {
   }
 
   const { executable, args } = createRunCommand(request);
-  const provider = request.provider ?? "agy";
+  const provider = request.provider ?? "gemini";
   const cwd = request.sourceFolder ?? app.getPath("home");
   const canAccessCwd = (mode: number) => {
     try {
@@ -1512,7 +1440,9 @@ ipcMain.handle("agent:run", (event, request: AgentRunRequest) => {
     arguments: args
       .slice(0, -1)
       .map((argument, index, values) =>
-        index > 0 && values[index - 1] === "--conversation"
+        index > 0 &&
+        (values[index - 1] === "--conversation" ||
+          values[index - 1] === "--resume")
           ? "<conversation-id>"
           : argument,
       ),

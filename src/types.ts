@@ -36,7 +36,7 @@ export type AgentApprovalResponse = {
   decision: AgentApprovalDecision;
 };
 
-export type AgentProvider = "agy" | "claude" | "codex";
+export type AgentProvider = "gemini" | "claude" | "codex";
 
 export type AgentAccessMode =
   | "ask"

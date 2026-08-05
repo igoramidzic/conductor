@@ -46,7 +46,7 @@ const ACCESS_MODES = {
       description: "Bypasses Claude's permission checks.",
     },
   ],
-  agy: [
+  gemini: [
     {
       value: "ask",
       label: "Ask permissions",
@@ -71,7 +71,7 @@ const ACCESS_MODES = {
 } as const satisfies Record<AgentProvider, readonly AgentAccessModeOption[]>;
 
 const PROVIDER_LABELS = {
-  agy: "Gemini",
+  gemini: "Gemini",
   claude: "Claude",
   codex: "Codex",
 } as const satisfies Record<AgentProvider, string>;
@@ -128,10 +128,10 @@ export function getAgentAccessArgs(
   }
 
   if (mode === "full-access") {
-    return ["--dangerously-skip-permissions"];
+    return ["--approval-mode", "yolo"];
   }
-  if (mode === "accept-edits" || mode === "plan") {
-    return ["--mode", mode];
+  if (mode === "accept-edits") {
+    return ["--approval-mode", "auto_edit"];
   }
-  return [];
+  return ["--approval-mode", mode === "plan" ? "plan" : "default"];
 }

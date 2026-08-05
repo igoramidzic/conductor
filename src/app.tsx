@@ -29,6 +29,7 @@ import type {
   AgentEvent,
   AgentModel,
   AgentModelSelection,
+  AgentProvider,
   ChatMessage,
   ChatSession,
   Project,
@@ -46,6 +47,15 @@ const emptyWorkspace: WorkspaceState = {
   activeSessionId: null,
 };
 
+function migrateProvider(value: unknown): AgentProvider | undefined {
+  if (value === "agy") {
+    return "gemini";
+  }
+  return value === "gemini" || value === "claude" || value === "codex"
+    ? value
+    : undefined;
+}
+
 function loadWorkspace(): WorkspaceState {
   try {
     const stored = window.localStorage.getItem(STORAGE_KEY);
@@ -58,30 +68,46 @@ function loadWorkspace(): WorkspaceState {
       return emptyWorkspace;
     }
 
-    const normalizeSession = (session: ChatSession): ChatSession => ({
-      ...session,
-      archived: session.archived ?? false,
-      messages: Array.isArray(session.messages)
-        ? session.messages.map((message) => {
-            const wasInterrupted =
-              message.status === "thinking" || message.status === "streaming";
-            return {
-              ...message,
-              chunks: Array.isArray(message.chunks)
-                ? message.chunks
-                : message.content
-                  ? [message.content]
+    const normalizeSession = (session: ChatSession): ChatSession => {
+      const legacyProvider = session.provider as string | undefined;
+      const legacyConversationProvider = session.conversationProvider as
+        | string
+        | undefined;
+      const incompatibleConversation =
+        legacyProvider === "agy" || legacyConversationProvider === "agy";
+      return {
+        ...session,
+        archived: session.archived ?? false,
+        provider: migrateProvider(legacyProvider),
+        model: legacyProvider === "agy" ? "auto" : session.model,
+        conversationId: incompatibleConversation
+          ? undefined
+          : session.conversationId,
+        conversationProvider: incompatibleConversation
+          ? undefined
+          : migrateProvider(legacyConversationProvider),
+        messages: Array.isArray(session.messages)
+          ? session.messages.map((message) => {
+              const wasInterrupted =
+                message.status === "thinking" || message.status === "streaming";
+              return {
+                ...message,
+                chunks: Array.isArray(message.chunks)
+                  ? message.chunks
+                  : message.content
+                    ? [message.content]
+                    : [],
+                activities: Array.isArray(message.activities)
+                  ? message.activities
                   : [],
-              activities: Array.isArray(message.activities)
-                ? message.activities
-                : [],
-              status: wasInterrupted ? "error" : message.status,
-              runId: undefined,
-              approval: undefined,
-            } satisfies ChatMessage;
-          })
-        : [],
-    });
+                status: wasInterrupted ? "error" : message.status,
+                runId: undefined,
+                approval: undefined,
+              } satisfies ChatMessage;
+            })
+          : [],
+      };
+    };
 
     const projects = parsed.projects.map((project) => ({
       ...project,
@@ -101,16 +127,30 @@ function loadWorkspace(): WorkspaceState {
       activeProjectId: parsed.activeProjectId ?? null,
       activeSessionId: parsed.activeSessionId ?? null,
       accessModes: {
-        agy: resolveAgentAccessMode("agy", parsed.accessModes?.agy),
+        gemini: resolveAgentAccessMode(
+          "gemini",
+          (parsed.accessModes as Record<string, AgentAccessMode> | undefined)
+            ?.gemini ??
+            (parsed.accessModes as Record<string, AgentAccessMode> | undefined)
+              ?.agy,
+        ),
         claude: resolveAgentAccessMode("claude", parsed.accessModes?.claude),
         codex: resolveAgentAccessMode("codex", parsed.accessModes?.codex),
       },
       lastModel:
         parsed.lastModel &&
-        ["agy", "claude", "codex"].includes(parsed.lastModel.provider) &&
+        migrateProvider(parsed.lastModel.provider) &&
         typeof parsed.lastModel.model === "string" &&
         parsed.lastModel.model.length > 0
-          ? parsed.lastModel
+          ? {
+              provider: migrateProvider(
+                parsed.lastModel.provider,
+              ) as AgentProvider,
+              model:
+                (parsed.lastModel.provider as string) === "agy"
+                  ? "auto"
+                  : parsed.lastModel.model,
+            }
           : undefined,
     };
   } catch {
@@ -388,14 +428,14 @@ function ConductorApp() {
   function defaultModelForNewSession(): AgentModelSelection | undefined {
     if (activeSession?.model) {
       return {
-        provider: activeSession.provider ?? "agy",
+        provider: activeSession.provider ?? "gemini",
         model: activeSession.model,
       };
     }
 
     return (
       workspace.lastModel ??
-      availableModels.find((model) => model.provider === "agy") ??
+      availableModels.find((model) => model.provider === "gemini") ??
       availableModels[0]
     );
   }
@@ -631,7 +671,7 @@ function ConductorApp() {
   }
 
   function selectAccessMode(accessMode: AgentAccessMode) {
-    const provider = activeSession?.provider ?? "agy";
+    const provider = activeSession?.provider ?? "gemini";
     setWorkspace((current) => ({
       ...current,
       accessModes: {
@@ -672,7 +712,7 @@ function ConductorApp() {
     const sessionId = activeSession.id;
     const selectedModel = activeSession.model
       ? {
-          provider: activeSession.provider ?? "agy",
+          provider: activeSession.provider ?? "gemini",
           model: activeSession.model,
         }
       : (workspace.lastModel ??
@@ -681,17 +721,18 @@ function ConductorApp() {
             model.provider ===
             (activeSession.provider ??
               activeSession.conversationProvider ??
-              "agy"),
+              "gemini"),
         ) ??
-        availableModels.find((model) => model.provider === "agy") ??
+        availableModels.find((model) => model.provider === "gemini") ??
         availableModels[0]);
-    const provider = selectedModel?.provider ?? activeSession.provider ?? "agy";
+    const provider =
+      selectedModel?.provider ?? activeSession.provider ?? "gemini";
     const accessMode = resolveAgentAccessMode(
       provider,
       workspace.accessModes?.[provider],
     );
     const conversationId =
-      (activeSession.conversationProvider ?? "agy") === provider
+      (activeSession.conversationProvider ?? "gemini") === provider
         ? activeSession.conversationId
         : undefined;
     const isPendingSession = pendingSession?.session.id === sessionId;
@@ -915,8 +956,8 @@ function ConductorApp() {
         availableModels={availableModels}
         modelsLoading={modelsLoading}
         accessMode={resolveAgentAccessMode(
-          activeSession?.provider ?? "agy",
-          workspace.accessModes?.[activeSession?.provider ?? "agy"],
+          activeSession?.provider ?? "gemini",
+          workspace.accessModes?.[activeSession?.provider ?? "gemini"],
         )}
         onCreateProject={() => setProjectDialogOpen(true)}
         onCreateSession={createSession}
