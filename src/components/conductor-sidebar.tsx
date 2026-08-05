@@ -24,7 +24,6 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Popover } from "@/components/ui/popover";
 import {
   Sidebar,
   SidebarContent,
@@ -36,10 +35,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
-import {
-  UsageMenuItem,
-  UsagePopoverContent,
-} from "@/components/usage-menu-item";
+import { UsageMenuItem } from "@/components/usage-menu-item";
 import { cn } from "@/lib/utils";
 import type { ChatSession, GeminiAccountUsage, Project } from "@/types";
 
@@ -69,6 +65,7 @@ type SessionTitleMetrics = {
 };
 
 const SESSION_TITLE_LOOP_GAP = 52;
+const USAGE_REFRESH_INTERVAL_MS = 5 * 60 * 1_000;
 
 function SessionTitle({
   title,
@@ -263,11 +260,7 @@ export function ConductorSidebar({
   const [usage, setUsage] = useState<GeminiAccountUsage | null>(null);
   const [usageLoading, setUsageLoading] = useState(true);
   const [usageError, setUsageError] = useState<string | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [usagePopoverOpen, setUsagePopoverOpen] = useState(false);
   const usageRequestIdRef = useRef(0);
-  const settingsTriggerRef = useRef<HTMLButtonElement>(null);
-  const settingsMenuContentRef = useRef<HTMLDivElement>(null);
   const visibleRecentChats = recentChats.filter(
     (session) => !session.archived && session.messages.length > 0,
   );
@@ -300,7 +293,12 @@ export function ConductorSidebar({
 
   useEffect(() => {
     void refreshUsage();
+    const refreshInterval = window.setInterval(() => {
+      void refreshUsage();
+    }, USAGE_REFRESH_INTERVAL_MS);
+
     return () => {
+      window.clearInterval(refreshInterval);
       usageRequestIdRef.current += 1;
     };
   }, [refreshUsage]);
@@ -455,116 +453,60 @@ export function ConductorSidebar({
       <SidebarFooter className="border-t border-sidebar-border p-2">
         <SidebarMenu>
           <SidebarMenuItem>
-            <Popover
-              modal={false}
-              open={usagePopoverOpen}
-              onOpenChange={(open, eventDetails) => {
-                setUsagePopoverOpen(open);
-
-                if (open) {
-                  return;
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger
+                render={
+                  <SidebarMenuButton className="h-9 text-[13px] text-sidebar-foreground/75" />
                 }
-
-                const nextTarget =
-                  eventDetails.reason === "focus-out" &&
-                  eventDetails.event instanceof FocusEvent
-                    ? eventDetails.event.relatedTarget
-                    : eventDetails.event.target;
-                const movedBackToSettings =
-                  nextTarget instanceof Node &&
-                  settingsMenuContentRef.current?.contains(nextTarget);
-
-                if (!movedBackToSettings) {
-                  setSettingsOpen(false);
-                }
-              }}
-            >
-              <DropdownMenu
-                modal={false}
-                open={settingsOpen}
-                onOpenChange={(open, eventDetails) => {
-                  const isUsageInteraction =
-                    usagePopoverOpen &&
-                    (eventDetails.reason === "focus-out" ||
-                      eventDetails.reason === "outside-press");
-
-                  if (!open && isUsageInteraction) {
-                    eventDetails.cancel();
-                    return;
-                  }
-
-                  setSettingsOpen(open);
-                  if (!open) {
-                    setUsagePopoverOpen(false);
-                  }
-                }}
               >
-                <DropdownMenuTrigger
-                  render={
-                    <SidebarMenuButton
-                      ref={settingsTriggerRef}
-                      className="h-9 text-[13px] text-sidebar-foreground/75"
-                    />
-                  }
-                >
-                  <Settings2 aria-hidden="true" />
-                  <span>Settings</span>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  ref={settingsMenuContentRef}
-                  side="top"
-                  align="start"
-                  sideOffset={8}
-                  className="w-56"
-                >
-                  <UsageMenuItem
-                    usage={usage}
-                    loading={usageLoading}
-                    error={usageError}
-                    onOpen={() => setUsagePopoverOpen(true)}
-                  />
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger>
-                      <span>Theme</span>
-                      <span className="min-w-0 flex-1 text-right text-xs capitalize text-muted-foreground">
-                        {theme}
-                      </span>
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent className="min-w-36">
-                      <DropdownMenuRadioGroup
-                        value={theme}
-                        onValueChange={(value) => {
-                          if (
-                            value === "light" ||
-                            value === "dark" ||
-                            value === "system"
-                          ) {
-                            setTheme(value);
-                          }
-                        }}
-                      >
-                        <DropdownMenuRadioItem value="light" closeOnClick>
-                          Light
-                        </DropdownMenuRadioItem>
-                        <DropdownMenuRadioItem value="dark" closeOnClick>
-                          Dark
-                        </DropdownMenuRadioItem>
-                        <DropdownMenuRadioItem value="system" closeOnClick>
-                          System
-                        </DropdownMenuRadioItem>
-                      </DropdownMenuRadioGroup>
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
-                </DropdownMenuContent>
-              </DropdownMenu>
-              <UsagePopoverContent
-                usage={usage}
-                loading={usageLoading}
-                error={usageError}
-                anchor={settingsTriggerRef}
-                onRefresh={refreshUsage}
-              />
-            </Popover>
+                <Settings2 aria-hidden="true" />
+                <span>Settings</span>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                side="top"
+                align="start"
+                sideOffset={8}
+                className="w-56"
+              >
+                <UsageMenuItem
+                  usage={usage}
+                  loading={usageLoading}
+                  error={usageError}
+                />
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <span>Theme</span>
+                    <span className="min-w-0 flex-1 text-right text-xs capitalize text-muted-foreground">
+                      {theme}
+                    </span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="min-w-36">
+                    <DropdownMenuRadioGroup
+                      value={theme}
+                      onValueChange={(value) => {
+                        if (
+                          value === "light" ||
+                          value === "dark" ||
+                          value === "system"
+                        ) {
+                          setTheme(value);
+                        }
+                      }}
+                    >
+                      <DropdownMenuRadioItem value="light" closeOnClick>
+                        Light
+                      </DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="dark" closeOnClick>
+                        Dark
+                      </DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="system" closeOnClick>
+                        System
+                      </DropdownMenuRadioItem>
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
