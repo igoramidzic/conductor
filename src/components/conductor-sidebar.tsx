@@ -1,11 +1,17 @@
 import {
   Archive,
+  Check,
   ChevronRight,
+  Ellipsis,
   Folder,
+  FolderOpen,
   GitFork,
   LoaderCircle,
+  Pencil,
   Plus,
   Settings2,
+  SquarePen,
+  Trash2,
 } from "lucide-react";
 import {
   type CSSProperties,
@@ -25,8 +31,10 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
@@ -59,8 +67,15 @@ type ConductorSidebarProps = {
   onToggleProject: (projectId: string) => void;
   onSelectRecentChat: (sessionId: string) => void;
   onSelectSession: (projectId: string, sessionId: string) => void;
+  onRenameRecentChat: (sessionId: string) => void;
+  onRenameSession: (projectId: string, sessionId: string) => void;
   onArchiveRecentChat: (sessionId: string) => void;
   onArchiveSession: (projectId: string, sessionId: string) => void;
+  onArchiveProjectChats: (projectId: string) => void;
+  onMarkProjectChatsRead: (projectId: string) => void;
+  onRevealProject: (projectId: string) => void;
+  onEditProject: (projectId: string) => void;
+  onRemoveProject: (projectId: string) => void;
   onCreateProject: () => void;
   onCreateRecentChat: () => void;
   onCreateSession: (projectId: string) => void;
@@ -230,12 +245,14 @@ function SessionRow({
   active,
   placement,
   onSelect,
+  onRename,
   onArchive,
 }: {
   session: ChatSession;
   active: boolean;
   placement: "project" | "recent";
   onSelect: () => void;
+  onRename: () => void;
   onArchive: () => void;
 }) {
   const indicatorState = getSessionIndicatorState(session);
@@ -249,6 +266,7 @@ function SessionRow({
         isActive={active}
         className="h-8 overflow-hidden px-1! text-[13px] font-normal text-sidebar-foreground/70"
         onClick={onSelect}
+        onDoubleClick={onRename}
       >
         <SessionTitle title={session.title} placement={placement} />
       </SidebarMenuButton>
@@ -281,11 +299,13 @@ function SessionRow({
 function SidebarSectionRow({
   label,
   actionLabel,
+  actionIcon = "plus",
   active = false,
   onAction,
 }: {
   label: string;
   actionLabel: string;
+  actionIcon?: "plus" | "compose";
   active?: boolean;
   onAction: () => void;
 }) {
@@ -310,6 +330,7 @@ function SidebarSectionRow({
         </CollapsibleTrigger>
         <SidebarMenuAction
           data-sidebar-add-action="true"
+          data-sidebar-row-action="true"
           className="text-sidebar-foreground/45 hover:text-sidebar-foreground"
           aria-label={actionLabel}
           onClick={(event) => {
@@ -317,7 +338,11 @@ function SidebarSectionRow({
             onAction();
           }}
         >
-          <Plus aria-hidden="true" />
+          {actionIcon === "compose" ? (
+            <SquarePen aria-hidden="true" />
+          ) : (
+            <Plus aria-hidden="true" />
+          )}
         </SidebarMenuAction>
       </SidebarMenuItem>
     </SidebarMenu>
@@ -336,8 +361,15 @@ export function ConductorSidebar({
   onToggleProject,
   onSelectRecentChat,
   onSelectSession,
+  onRenameRecentChat,
+  onRenameSession,
   onArchiveRecentChat,
   onArchiveSession,
+  onArchiveProjectChats,
+  onMarkProjectChatsRead,
+  onRevealProject,
+  onEditProject,
+  onRemoveProject,
   onCreateProject,
   onCreateRecentChat,
   onCreateSession,
@@ -418,6 +450,9 @@ export function ConductorSidebar({
                     (session) =>
                       !session.archived && session.messages.length > 0,
                   );
+                  const hasUnreadChats = project.sessions.some(
+                    (session) => session.hasUnreadCompletion,
+                  );
                   return (
                     <Collapsible
                       key={project.id}
@@ -434,7 +469,7 @@ export function ConductorSidebar({
                             <SidebarMenuButton
                               data-sidebar-action-trigger="true"
                               className={cn(
-                                "h-8 pr-8 text-[13px]",
+                                "h-8 pr-14 text-[13px]",
                                 isActive && "bg-sidebar-accent font-medium",
                               )}
                               isActive={isActive}
@@ -449,8 +484,71 @@ export function ConductorSidebar({
                             {project.name}
                           </span>
                         </CollapsibleTrigger>
+                        <DropdownMenu modal={false}>
+                          <DropdownMenuTrigger
+                            render={
+                              <SidebarMenuAction
+                                data-sidebar-project-action="true"
+                                data-sidebar-row-action="true"
+                                className="right-7 text-sidebar-foreground/45 hover:text-sidebar-foreground"
+                                aria-label={`More options for ${project.name}`}
+                              />
+                            }
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <Ellipsis aria-hidden="true" />
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent
+                            side="right"
+                            align="start"
+                            sideOffset={8}
+                            className="w-52"
+                          >
+                            <DropdownMenuItem
+                              className="h-8 px-2 text-xs"
+                              onClick={() => onEditProject(project.id)}
+                            >
+                              <Pencil aria-hidden="true" />
+                              Edit project
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              className="h-8 px-2 text-xs"
+                              disabled={visibleSessions.length === 0}
+                              onClick={() => onArchiveProjectChats(project.id)}
+                            >
+                              <Archive aria-hidden="true" />
+                              Archive chats
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              className="h-8 px-2 text-xs"
+                              disabled={!hasUnreadChats}
+                              onClick={() => onMarkProjectChatsRead(project.id)}
+                            >
+                              <Check aria-hidden="true" />
+                              Mark all as read
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              className="h-8 px-2 text-xs"
+                              onClick={() => onRevealProject(project.id)}
+                            >
+                              <FolderOpen aria-hidden="true" />
+                              Reveal in Finder
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              variant="destructive"
+                              className="h-8 px-2 text-xs"
+                              onClick={() => onRemoveProject(project.id)}
+                            >
+                              <Trash2 aria-hidden="true" />
+                              Remove project
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                         <SidebarMenuAction
                           data-sidebar-add-action="true"
+                          data-sidebar-row-action="true"
                           className="text-sidebar-foreground/45 hover:text-sidebar-foreground"
                           aria-label={`New session in ${project.name}`}
                           onClick={(event) => {
@@ -458,7 +556,7 @@ export function ConductorSidebar({
                             onCreateSession(project.id);
                           }}
                         >
-                          <Plus aria-hidden="true" />
+                          <SquarePen aria-hidden="true" />
                         </SidebarMenuAction>
                       </div>
 
@@ -482,6 +580,9 @@ export function ConductorSidebar({
                                 placement="project"
                                 onSelect={() =>
                                   onSelectSession(project.id, session.id)
+                                }
+                                onRename={() =>
+                                  onRenameSession(project.id, session.id)
                                 }
                                 onArchive={() =>
                                   onArchiveSession(project.id, session.id)
@@ -507,6 +608,7 @@ export function ConductorSidebar({
             <SidebarSectionRow
               label="Recents"
               actionLabel="New chat"
+              actionIcon="compose"
               active={pendingProjectId === null}
               onAction={onCreateRecentChat}
             />
@@ -527,6 +629,7 @@ export function ConductorSidebar({
                     active={session.id === activeSessionId}
                     placement="recent"
                     onSelect={() => onSelectRecentChat(session.id)}
+                    onRename={() => onRenameRecentChat(session.id)}
                     onArchive={() => onArchiveRecentChat(session.id)}
                   />
                 ))}

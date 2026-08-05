@@ -26,6 +26,11 @@ contextBridge.exposeInMainWorld("electron", {
   openDevTools: () => ipcRenderer.invoke("devtools:open") as Promise<void>,
   selectSourceFolder: () =>
     ipcRenderer.invoke("dialog:select-source-folder") as Promise<string | null>,
+  revealProjectFolder: (sourceFolder: string) =>
+    ipcRenderer.invoke(
+      "project:reveal-source-folder",
+      sourceFolder,
+    ) as Promise<void>,
   createWorktree: (request: WorktreeCreateRequest) =>
     ipcRenderer.invoke("worktree:create", request) as Promise<SessionWorktree>,
   revealWorktree: (worktreePath: string) =>

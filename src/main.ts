@@ -2463,6 +2463,23 @@ ipcMain.handle("dialog:select-source-folder", async (event) => {
   return result.canceled ? null : (result.filePaths[0] ?? null);
 });
 
+ipcMain.handle(
+  "project:reveal-source-folder",
+  async (_event, sourceFolder: string) => {
+    if (typeof sourceFolder !== "string" || !path.isAbsolute(sourceFolder)) {
+      throw new Error("Invalid project source folder.");
+    }
+    const resolvedPath = path.resolve(sourceFolder);
+    if (!fs.statSync(resolvedPath, { throwIfNoEntry: false })?.isDirectory()) {
+      throw new Error("The project source folder no longer exists.");
+    }
+    const error = await shell.openPath(resolvedPath);
+    if (error) {
+      throw new Error(error);
+    }
+  },
+);
+
 ipcMain.handle("worktree:create", (_event, request: WorktreeCreateRequest) =>
   createSessionWorktree(request),
 );

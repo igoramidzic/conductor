@@ -9,7 +9,11 @@ import {
 import { resolveAgentAccessMode } from "@/agent-access";
 import { ChatWorkspace } from "@/components/chat-workspace";
 import { ConductorSidebar } from "@/components/conductor-sidebar";
-import { ProjectDialog } from "@/components/project-dialog";
+import {
+  ProjectDialog,
+  RemoveProjectDialog,
+} from "@/components/project-dialog";
+import { SessionRenameDialog } from "@/components/session-rename-dialog";
 import { ThemeProvider } from "@/components/theme-provider";
 import {
   SidebarProvider,
@@ -41,6 +45,17 @@ import type {
 } from "@/types";
 
 const STORAGE_KEY = "conductor.workspace.v1";
+
+type ArchivedSessionUndo = {
+  projectId: string | null;
+  sessionId: string;
+  wasActive: boolean;
+};
+
+type RenamingSession = {
+  projectId: string | null;
+  sessionId: string;
+};
 
 const emptyWorkspace: WorkspaceState = {
   recentChatsExpanded: true,
@@ -322,6 +337,16 @@ function workspaceHasContent(workspace: WorkspaceState) {
   return workspace.projects.length > 0 || workspace.recentChats.length > 0;
 }
 
+function isEditableKeyboardTarget(target: EventTarget | null) {
+  return (
+    target instanceof HTMLElement &&
+    (target.isContentEditable ||
+      target.tagName === "INPUT" ||
+      target.tagName === "TEXTAREA" ||
+      target.tagName === "SELECT")
+  );
+}
+
 function titleFromPrompt(prompt: string) {
   const title =
     prompt.split("\n")[0]?.replace(/\s+/g, " ").trim() ?? "New session";
@@ -591,6 +616,13 @@ function ConductorApp() {
   const [availableModels, setAvailableModels] = useState<AgentModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [removingProjectId, setRemovingProjectId] = useState<string | null>(
+    null,
+  );
+  const [renamingSession, setRenamingSession] =
+    useState<RenamingSession | null>(null);
+  const archiveUndoStackRef = useRef<ArchivedSessionUndo[]>([]);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [pendingSession, setPendingSession] = useState<{
     projectId: string | null;
@@ -723,6 +755,23 @@ function ConductorApp() {
     workspace.activeSessionId,
     workspace.recentChats,
   ]);
+  const editingProject =
+    workspace.projects.find((project) => project.id === editingProjectId) ??
+    null;
+  const removingProject =
+    workspace.projects.find((project) => project.id === removingProjectId) ??
+    null;
+  const sessionBeingRenamed = renamingSession
+    ? renamingSession.projectId === null
+      ? (workspace.recentChats.find(
+          (session) => session.id === renamingSession.sessionId,
+        ) ?? null)
+      : (workspace.projects
+          .find((project) => project.id === renamingSession.projectId)
+          ?.sessions.find(
+            (session) => session.id === renamingSession.sessionId,
+          ) ?? null)
+    : null;
 
   function defaultModelForNewSession(): AgentModelSelection | undefined {
     if (activeSession?.model) {
@@ -767,6 +816,32 @@ function ConductorApp() {
       projects: [...current.projects, project],
       activeProjectId: project.id,
       activeSessionId: null,
+    }));
+  }
+
+  function openCreateProject() {
+    setEditingProjectId(null);
+    setProjectDialogOpen(true);
+  }
+
+  function openEditProject(projectId: string) {
+    setEditingProjectId(projectId);
+    setProjectDialogOpen(true);
+  }
+
+  function saveProject(name: string, sourceFolder: string) {
+    if (!editingProjectId) {
+      createProject(name, sourceFolder);
+      return;
+    }
+
+    setWorkspace((current) => ({
+      ...current,
+      projects: current.projects.map((project) =>
+        project.id === editingProjectId
+          ? { ...project, name, sourceFolder }
+          : project,
+      ),
     }));
   }
 
@@ -887,7 +962,55 @@ function ConductorApp() {
     );
   }
 
+  function renameSession(name: string) {
+    if (!renamingSession) {
+      return;
+    }
+
+    setWorkspace((current) =>
+      renamingSession.projectId === null
+        ? {
+            ...current,
+            recentChats: current.recentChats.map((session) =>
+              session.id === renamingSession.sessionId
+                ? { ...session, title: name }
+                : session,
+            ),
+          }
+        : {
+            ...current,
+            projects: current.projects.map((project) =>
+              project.id === renamingSession.projectId
+                ? {
+                    ...project,
+                    sessions: project.sessions.map((session) =>
+                      session.id === renamingSession.sessionId
+                        ? { ...session, title: name }
+                        : session,
+                    ),
+                  }
+                : project,
+            ),
+          },
+    );
+  }
+
   function archiveSession(projectId: string, sessionId: string) {
+    const snapshot = workspaceRef.current;
+    const session = snapshot.projects
+      .find((project) => project.id === projectId)
+      ?.sessions.find((item) => item.id === sessionId);
+    if (!session || session.archived) {
+      return;
+    }
+    archiveUndoStackRef.current.push({
+      projectId,
+      sessionId,
+      wasActive:
+        snapshot.activeProjectId === projectId &&
+        snapshot.activeSessionId === sessionId,
+    });
+
     setWorkspace((current) => {
       const project = current.projects.find((item) => item.id === projectId);
       if (!project) {
@@ -927,6 +1050,19 @@ function ConductorApp() {
   }
 
   function archiveRecentChat(sessionId: string) {
+    const snapshot = workspaceRef.current;
+    const session = snapshot.recentChats.find((item) => item.id === sessionId);
+    if (!session || session.archived) {
+      return;
+    }
+    archiveUndoStackRef.current.push({
+      projectId: null,
+      sessionId,
+      wasActive:
+        snapshot.activeProjectId === null &&
+        snapshot.activeSessionId === sessionId,
+    });
+
     setWorkspace((current) => {
       const fallbackSessionId = [...current.recentChats]
         .reverse()
@@ -949,6 +1085,170 @@ function ConductorApp() {
         ),
       };
     });
+  }
+
+  function archiveProjectChats(projectId: string) {
+    const snapshot = workspaceRef.current;
+    const project = snapshot.projects.find((item) => item.id === projectId);
+    const sessionsToArchive =
+      project?.sessions.filter(
+        (session) => !session.archived && session.messages.length > 0,
+      ) ?? [];
+    if (sessionsToArchive.length === 0) {
+      return;
+    }
+
+    const sessionIds = new Set(sessionsToArchive.map((session) => session.id));
+    archiveUndoStackRef.current.push(
+      ...sessionsToArchive.map((session) => ({
+        projectId,
+        sessionId: session.id,
+        wasActive:
+          snapshot.activeProjectId === projectId &&
+          snapshot.activeSessionId === session.id,
+      })),
+    );
+
+    setWorkspace((current) => ({
+      ...current,
+      activeSessionId:
+        current.activeProjectId === projectId &&
+        current.activeSessionId &&
+        sessionIds.has(current.activeSessionId)
+          ? null
+          : current.activeSessionId,
+      projects: current.projects.map((item) =>
+        item.id === projectId
+          ? {
+              ...item,
+              sessions: item.sessions.map((session) =>
+                sessionIds.has(session.id)
+                  ? { ...session, archived: true }
+                  : session,
+              ),
+            }
+          : item,
+      ),
+    }));
+  }
+
+  function undoArchivedSession() {
+    while (archiveUndoStackRef.current.length > 0) {
+      const undo = archiveUndoStackRef.current.pop();
+      if (!undo) {
+        return;
+      }
+
+      const snapshot = workspaceRef.current;
+      const archivedSession =
+        undo.projectId === null
+          ? snapshot.recentChats.find(
+              (session) => session.id === undo.sessionId && session.archived,
+            )
+          : snapshot.projects
+              .find((project) => project.id === undo.projectId)
+              ?.sessions.find(
+                (session) => session.id === undo.sessionId && session.archived,
+              );
+      if (!archivedSession) {
+        continue;
+      }
+
+      setWorkspace((current) => {
+        if (undo.projectId === null) {
+          return {
+            ...current,
+            recentChatsExpanded: true,
+            activeProjectId: undo.wasActive ? null : current.activeProjectId,
+            activeSessionId: undo.wasActive
+              ? undo.sessionId
+              : current.activeSessionId,
+            recentChats: current.recentChats.map((session) =>
+              session.id === undo.sessionId
+                ? { ...session, archived: false }
+                : session,
+            ),
+          };
+        }
+
+        return {
+          ...current,
+          projectsExpanded: true,
+          activeProjectId: undo.wasActive
+            ? undo.projectId
+            : current.activeProjectId,
+          activeSessionId: undo.wasActive
+            ? undo.sessionId
+            : current.activeSessionId,
+          projects: current.projects.map((project) =>
+            project.id === undo.projectId
+              ? {
+                  ...project,
+                  expanded: true,
+                  sessions: project.sessions.map((session) =>
+                    session.id === undo.sessionId
+                      ? { ...session, archived: false }
+                      : session,
+                  ),
+                }
+              : project,
+          ),
+        };
+      });
+      return;
+    }
+  }
+
+  function markProjectChatsRead(projectId: string) {
+    setWorkspace((current) => ({
+      ...current,
+      projects: current.projects.map((project) =>
+        project.id === projectId
+          ? {
+              ...project,
+              sessions: project.sessions.map((session) =>
+                session.hasUnreadCompletion
+                  ? { ...session, hasUnreadCompletion: false }
+                  : session,
+              ),
+            }
+          : project,
+      ),
+    }));
+  }
+
+  function revealProject(projectId: string) {
+    const project = workspaceRef.current.projects.find(
+      (item) => item.id === projectId,
+    );
+    if (!project) {
+      return;
+    }
+
+    void window.electron
+      .revealProjectFolder(project.sourceFolder)
+      .catch((error) => {
+        console.error("Unable to reveal the project folder.", error);
+      });
+  }
+
+  function removeProject(projectId: string) {
+    if (pendingSessionRef.current?.projectId === projectId) {
+      clearPendingSession();
+    }
+    archiveUndoStackRef.current = archiveUndoStackRef.current.filter(
+      (entry) => entry.projectId !== projectId,
+    );
+    setWorkspace((current) => ({
+      ...current,
+      activeProjectId:
+        current.activeProjectId === projectId ? null : current.activeProjectId,
+      activeSessionId:
+        current.activeProjectId === projectId ? null : current.activeSessionId,
+      projects: current.projects.filter((project) => project.id !== projectId),
+    }));
+    setEditingProjectId((current) => (current === projectId ? null : current));
+    setRemovingProjectId(null);
   }
 
   function selectModel(selection: AgentModel) {
@@ -1316,6 +1616,29 @@ function ConductorApp() {
 
   const createSessionRef = useRef(createSession);
   createSessionRef.current = createSession;
+  const undoArchivedSessionRef = useRef(undoArchivedSession);
+  undoArchivedSessionRef.current = undoArchivedSession;
+
+  useEffect(() => {
+    function handleArchiveUndoShortcut(event: globalThis.KeyboardEvent) {
+      if (
+        event.metaKey &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === "z" &&
+        !isEditableKeyboardTarget(event.target) &&
+        archiveUndoStackRef.current.length > 0
+      ) {
+        event.preventDefault();
+        undoArchivedSessionRef.current();
+      }
+    }
+
+    window.addEventListener("keydown", handleArchiveUndoShortcut);
+    return () =>
+      window.removeEventListener("keydown", handleArchiveUndoShortcut);
+  }, []);
 
   useEffect(() => {
     function handleNewSessionShortcut(event: globalThis.KeyboardEvent) {
@@ -1389,9 +1712,20 @@ function ConductorApp() {
         onToggleProject={toggleProject}
         onSelectRecentChat={selectRecentChat}
         onSelectSession={selectSession}
+        onRenameRecentChat={(sessionId) =>
+          setRenamingSession({ projectId: null, sessionId })
+        }
+        onRenameSession={(projectId, sessionId) =>
+          setRenamingSession({ projectId, sessionId })
+        }
         onArchiveRecentChat={archiveRecentChat}
         onArchiveSession={archiveSession}
-        onCreateProject={() => setProjectDialogOpen(true)}
+        onArchiveProjectChats={archiveProjectChats}
+        onMarkProjectChatsRead={markProjectChatsRead}
+        onRevealProject={revealProject}
+        onEditProject={openEditProject}
+        onRemoveProject={setRemovingProjectId}
+        onCreateProject={openCreateProject}
         onCreateRecentChat={() => createSession(null)}
         onCreateSession={createSession}
       />
@@ -1405,7 +1739,7 @@ function ConductorApp() {
           activeSession?.provider ?? "gemini",
           workspace.accessModes?.[activeSession?.provider ?? "gemini"],
         )}
-        onCreateProject={() => setProjectDialogOpen(true)}
+        onCreateProject={openCreateProject}
         onCreateSession={createSession}
         onProjectChange={selectProject}
         onModelChange={selectModel}
@@ -1426,8 +1760,38 @@ function ConductorApp() {
       <FloatingSidebarTrigger />
       <ProjectDialog
         open={projectDialogOpen}
-        onOpenChange={setProjectDialogOpen}
-        onCreate={createProject}
+        project={editingProject}
+        onOpenChange={(open) => {
+          setProjectDialogOpen(open);
+          if (!open) {
+            setEditingProjectId(null);
+          }
+        }}
+        onSave={saveProject}
+      />
+      <RemoveProjectDialog
+        open={removingProject !== null}
+        project={removingProject}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRemovingProjectId(null);
+          }
+        }}
+        onConfirm={() => {
+          if (removingProjectId) {
+            removeProject(removingProjectId);
+          }
+        }}
+      />
+      <SessionRenameDialog
+        open={renamingSession !== null}
+        session={sessionBeingRenamed}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRenamingSession(null);
+          }
+        }}
+        onSave={renameSession}
       />
     </>
   );

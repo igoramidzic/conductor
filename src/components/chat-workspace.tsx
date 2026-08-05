@@ -999,7 +999,12 @@ function ProjectPicker({
       itemToStringValue={(item: Project) => item.id}
       isItemEqualToValue={(item, value) => item.id === value?.id}
     >
-      <div className="group/project-picker relative inline-flex min-w-0 max-w-[70%]">
+      <div
+        className={cn(
+          "group/project-picker relative inline-flex min-w-0 max-w-[70%]",
+          placement === "card" && !project && "min-w-28",
+        )}
+      >
         <ComboboxTrigger
           render={<button type="button" />}
           aria-label={project ? `Project: ${project.name}` : "Choose project"}

@@ -23,6 +23,7 @@ declare global {
       saveWorkspace: (serialized: string) => Promise<void>;
       openDevTools: () => Promise<void>;
       selectSourceFolder: () => Promise<string | null>;
+      revealProjectFolder: (sourceFolder: string) => Promise<void>;
       createWorktree: (
         request: WorktreeCreateRequest,
       ) => Promise<SessionWorktree>;
