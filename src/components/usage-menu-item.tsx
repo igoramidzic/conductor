@@ -1,4 +1,5 @@
 import { ChevronRight } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import {
@@ -21,6 +22,7 @@ const compactNumberFormatter = new Intl.NumberFormat(undefined, {
   notation: "compact",
   maximumFractionDigits: 1,
 });
+const HOVER_CARD_CLOSE_DELAY_MS = 700;
 
 function formatCount(value: number) {
   return numberFormatter.format(value);
@@ -183,11 +185,54 @@ function UsageDetails({ usage }: { usage: GeminiAccountUsage }) {
 }
 
 export function UsageMenuItem({ usage, loading, error }: UsageMenuItemProps) {
+  const [hoverCardOpen, setHoverCardOpen] = useState(false);
+  const closeTimerRef = useRef<number | null>(null);
+
+  const clearCloseTimer = useCallback(() => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleClose = useCallback(() => {
+    clearCloseTimer();
+    closeTimerRef.current = window.setTimeout(() => {
+      setHoverCardOpen(false);
+      closeTimerRef.current = null;
+    }, HOVER_CARD_CLOSE_DELAY_MS);
+  }, [clearCloseTimer]);
+
+  useEffect(() => clearCloseTimer, [clearCloseTimer]);
+
   return (
-    <HoverCard>
+    <HoverCard
+      open={hoverCardOpen}
+      onOpenChange={(open, eventDetails) => {
+        if (open) {
+          clearCloseTimer();
+          setHoverCardOpen(true);
+          return;
+        }
+
+        if (
+          eventDetails.reason === "trigger-hover" ||
+          eventDetails.reason === "trigger-focus"
+        ) {
+          eventDetails.cancel();
+          scheduleClose();
+          return;
+        }
+
+        clearCloseTimer();
+        setHoverCardOpen(false);
+      }}
+    >
       <HoverCardTrigger
         delay={250}
-        closeDelay={700}
+        closeDelay={HOVER_CARD_CLOSE_DELAY_MS}
+        onMouseEnter={clearCloseTimer}
+        onMouseLeave={scheduleClose}
         render={<DropdownMenuItem closeOnClick={false} />}
       >
         <span>Usage</span>
@@ -201,6 +246,8 @@ export function UsageMenuItem({ usage, loading, error }: UsageMenuItemProps) {
         align="center"
         sideOffset={8}
         className="w-80 p-3"
+        onMouseEnter={clearCloseTimer}
+        onMouseLeave={scheduleClose}
       >
         <div>
           <p className="text-sm font-medium">Gemini usage</p>

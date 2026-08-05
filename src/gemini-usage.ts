@@ -452,10 +452,10 @@ function quotaErrorForCapture(capture: GeminiUsageCapture) {
       text,
     )
   ) {
-    return "Open Gemini CLI once and finish signing in, then refresh.";
+    return "Gemini CLI is not signed in. Conductor will retry automatically.";
   }
   if (capture.timedOut) {
-    return "Gemini CLI did not return quota data. Open it once in Terminal, then refresh.";
+    return "Gemini CLI did not return quota data. Conductor will retry automatically.";
   }
   return "Gemini CLI did not expose account quota for the current authentication method.";
 }
