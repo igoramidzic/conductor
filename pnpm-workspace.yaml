@@ -1,0 +1,34 @@
+packages:
+  - .
+
+# Electron Forge expects a flat modules layout for packaging.
+nodeLinker: hoisted
+
+# Electron Forge 7 resolves @electron/node-gyp from Electron's official git
+# repository. pnpm 11 blocks exotic transitive sources unless opted in.
+blockExoticSubdeps: false
+
+allowBuilds:
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+
+# Forge's current fuses plugin declares a ^1 peer range. Keep the newest
+# compatible major until Forge updates that contract.
+update:
+  ignoreDeps:
+    - '@electron/fuses'
+
+minimumReleaseAgeExclude:
+  - '@base-ui/react@1.7.0'
+  - '@base-ui/utils@0.3.2'
+  - '@biomejs/biome@2.5.7'
+  - '@biomejs/cli-darwin-arm64@2.5.7'
+  - '@biomejs/cli-darwin-x64@2.5.7'
+  - '@biomejs/cli-linux-arm64-musl@2.5.7'
+  - '@biomejs/cli-linux-arm64@2.5.7'
+  - '@biomejs/cli-linux-x64-musl@2.5.7'
+  - '@biomejs/cli-linux-x64@2.5.7'
+  - '@biomejs/cli-win32-arm64@2.5.7'
+  - '@biomejs/cli-win32-x64@2.5.7'
+  - electron@43.3.0
