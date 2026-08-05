@@ -3,6 +3,7 @@ import {
   ChevronRight,
   Folder,
   GitFork,
+  LoaderCircle,
   Plus,
   Settings2,
 } from "lucide-react";
@@ -73,6 +74,61 @@ type SessionTitleMetrics = {
 
 const SESSION_TITLE_LOOP_GAP = 52;
 const USAGE_REFRESH_INTERVAL_MS = 5 * 60 * 1_000;
+
+type SessionIndicatorState =
+  | "working"
+  | "needs-interaction"
+  | "unread-completion";
+
+function getSessionIndicatorState(
+  session: ChatSession,
+): SessionIndicatorState | null {
+  const activeMessage = session.messages.findLast(
+    (message) =>
+      message.role === "assistant" &&
+      (message.status === "thinking" || message.status === "streaming"),
+  );
+  if (activeMessage?.approval) {
+    return "needs-interaction";
+  }
+  if (activeMessage) {
+    return "working";
+  }
+  return session.hasUnreadCompletion ? "unread-completion" : null;
+}
+
+function SessionIndicator({ state }: { state: SessionIndicatorState }) {
+  const label =
+    state === "working"
+      ? "Session is working"
+      : state === "needs-interaction"
+        ? "Session needs interaction"
+        : "Session has a new completed response";
+
+  return (
+    <span
+      data-session-indicator="true"
+      className="pointer-events-none absolute top-1/2 right-1 z-10 flex size-5 -translate-y-1/2 items-center justify-center"
+      role="status"
+      aria-label={label}
+    >
+      {state === "working" ? (
+        <LoaderCircle
+          className="size-3.5 animate-spin text-sidebar-foreground/55 motion-reduce:animate-none"
+          aria-hidden="true"
+        />
+      ) : (
+        <span
+          className={cn(
+            "size-2 rounded-full",
+            state === "needs-interaction" ? "bg-amber-400" : "bg-primary",
+          )}
+          aria-hidden="true"
+        />
+      )}
+    </span>
+  );
+}
 
 function SessionTitle({
   title,
@@ -182,8 +238,13 @@ function SessionRow({
   onSelect: () => void;
   onArchive: () => void;
 }) {
+  const indicatorState = getSessionIndicatorState(session);
+
   return (
-    <SidebarMenuItem data-session-row="true">
+    <SidebarMenuItem
+      data-session-row="true"
+      data-session-status={indicatorState ?? undefined}
+    >
       <SidebarMenuButton
         isActive={active}
         className="h-8 overflow-hidden px-1! text-[13px] font-normal text-sidebar-foreground/70"
@@ -191,7 +252,8 @@ function SessionRow({
       >
         <SessionTitle title={session.title} placement={placement} />
       </SidebarMenuButton>
-      {session.worktree ? (
+      {indicatorState ? <SessionIndicator state={indicatorState} /> : null}
+      {session.worktree && !indicatorState ? (
         <span
           data-session-worktree="true"
           className="pointer-events-none absolute top-1.5 right-1 z-10 flex size-5 items-center justify-center text-primary/75 transition-opacity"

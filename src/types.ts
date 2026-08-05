@@ -149,6 +149,7 @@ export type ChatSession = {
   title: string;
   createdAt: number;
   archived: boolean;
+  hasUnreadCompletion: boolean;
   executionMode?: SessionExecutionMode;
   worktree?: SessionWorktree;
   provider?: AgentProvider;

@@ -138,6 +138,50 @@ function migrateProvider(value: unknown): AgentProvider | undefined {
     : undefined;
 }
 
+function markSessionViewed(
+  workspace: WorkspaceState,
+  projectId: string | null,
+  sessionId: string | null,
+): WorkspaceState {
+  if (!sessionId) {
+    return workspace;
+  }
+
+  if (projectId === null) {
+    const session = workspace.recentChats.find((item) => item.id === sessionId);
+    if (!session?.hasUnreadCompletion) {
+      return workspace;
+    }
+    return {
+      ...workspace,
+      recentChats: workspace.recentChats.map((item) =>
+        item.id === sessionId ? { ...item, hasUnreadCompletion: false } : item,
+      ),
+    };
+  }
+
+  const project = workspace.projects.find((item) => item.id === projectId);
+  const session = project?.sessions.find((item) => item.id === sessionId);
+  if (!session?.hasUnreadCompletion) {
+    return workspace;
+  }
+  return {
+    ...workspace,
+    projects: workspace.projects.map((item) =>
+      item.id === projectId
+        ? {
+            ...item,
+            sessions: item.sessions.map((projectSession) =>
+              projectSession.id === sessionId
+                ? { ...projectSession, hasUnreadCompletion: false }
+                : projectSession,
+            ),
+          }
+        : item,
+    ),
+  };
+}
+
 function parseWorkspace(stored: string | null): WorkspaceState {
   try {
     if (!stored) {
@@ -160,6 +204,7 @@ function parseWorkspace(stored: string | null): WorkspaceState {
       return {
         ...session,
         archived: session.archived ?? false,
+        hasUnreadCompletion: session.hasUnreadCompletion ?? false,
         executionMode:
           worktree || session.executionMode === "worktree"
             ? "worktree"
@@ -221,15 +266,17 @@ function parseWorkspace(stored: string | null): WorkspaceState {
         : [],
     }));
 
-    return {
+    const activeProjectId = parsed.activeProjectId ?? null;
+    const activeSessionId = parsed.activeSessionId ?? null;
+    const normalizedWorkspace: WorkspaceState = {
       recentChatsExpanded: parsed.recentChatsExpanded ?? true,
       recentChats: Array.isArray(parsed.recentChats)
         ? parsed.recentChats.map(normalizeSession)
         : [],
       projectsExpanded: parsed.projectsExpanded ?? true,
       projects,
-      activeProjectId: parsed.activeProjectId ?? null,
-      activeSessionId: parsed.activeSessionId ?? null,
+      activeProjectId,
+      activeSessionId,
       accessModes: {
         gemini: resolveAgentAccessMode(
           "gemini",
@@ -257,6 +304,11 @@ function parseWorkspace(stored: string | null): WorkspaceState {
             }
           : undefined,
     };
+    return markSessionViewed(
+      normalizedWorkspace,
+      activeProjectId,
+      activeSessionId,
+    );
   } catch {
     return emptyWorkspace;
   }
@@ -294,7 +346,7 @@ function updateRun(
 ): WorkspaceState {
   let didChange = false;
 
-  function updateSession(session: ChatSession): ChatSession {
+  function updateSession(session: ChatSession, isActive: boolean): ChatSession {
     const messageIndex = session.messages.findIndex(
       (message) => message.runId === event.runId,
     );
@@ -473,13 +525,30 @@ function updateRun(
       };
     }
 
-    return { ...session, messages };
+    return {
+      ...session,
+      messages,
+      hasUnreadCompletion:
+        event.type === "complete" ? !isActive : session.hasUnreadCompletion,
+    };
   }
 
-  const recentChats = workspace.recentChats.map(updateSession);
+  const recentChats = workspace.recentChats.map((session) =>
+    updateSession(
+      session,
+      workspace.activeProjectId === null &&
+        workspace.activeSessionId === session.id,
+    ),
+  );
   const projects = workspace.projects.map((project) => ({
     ...project,
-    sessions: project.sessions.map(updateSession),
+    sessions: project.sessions.map((session) =>
+      updateSession(
+        session,
+        workspace.activeProjectId === project.id &&
+          workspace.activeSessionId === session.id,
+      ),
+    ),
   }));
 
   return didChange ? { ...workspace, recentChats, projects } : workspace;
@@ -734,6 +803,7 @@ function ConductorApp() {
       title: "New session",
       createdAt: Date.now(),
       archived: false,
+      hasUnreadCompletion: false,
       executionMode: "local",
       provider: defaultModel?.provider,
       model: defaultModel?.model,
@@ -789,20 +859,32 @@ function ConductorApp() {
 
   function selectSession(projectId: string, sessionId: string) {
     clearPendingSession();
-    setWorkspace((current) => ({
-      ...current,
-      activeProjectId: projectId,
-      activeSessionId: sessionId,
-    }));
+    setWorkspace((current) =>
+      markSessionViewed(
+        {
+          ...current,
+          activeProjectId: projectId,
+          activeSessionId: sessionId,
+        },
+        projectId,
+        sessionId,
+      ),
+    );
   }
 
   function selectRecentChat(sessionId: string) {
     clearPendingSession();
-    setWorkspace((current) => ({
-      ...current,
-      activeProjectId: null,
-      activeSessionId: sessionId,
-    }));
+    setWorkspace((current) =>
+      markSessionViewed(
+        {
+          ...current,
+          activeProjectId: null,
+          activeSessionId: sessionId,
+        },
+        null,
+        sessionId,
+      ),
+    );
   }
 
   function archiveSession(projectId: string, sessionId: string) {
@@ -1109,6 +1191,7 @@ function ConductorApp() {
                   provider,
                   model: selectedModel?.model,
                   title: titleFromPrompt(prompt),
+                  hasUnreadCompletion: false,
                   messages: [userMessage, assistantMessage],
                 },
               ]
@@ -1120,6 +1203,7 @@ function ConductorApp() {
                       worktree: runSession.worktree,
                       provider,
                       model: selectedModel?.model,
+                      hasUnreadCompletion: false,
                       title:
                         session.messages.length === 0
                           ? titleFromPrompt(prompt)
@@ -1145,6 +1229,7 @@ function ConductorApp() {
                       provider,
                       model: selectedModel?.model,
                       title: titleFromPrompt(prompt),
+                      hasUnreadCompletion: false,
                       messages: [userMessage, assistantMessage],
                     },
                   ]
@@ -1156,6 +1241,7 @@ function ConductorApp() {
                           worktree: runSession.worktree,
                           provider,
                           model: selectedModel?.model,
+                          hasUnreadCompletion: false,
                           title:
                             session.messages.length === 0
                               ? titleFromPrompt(prompt)
