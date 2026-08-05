@@ -1087,6 +1087,7 @@ const compactTokenFormatter = new Intl.NumberFormat(undefined, {
   notation: "compact",
   maximumFractionDigits: 1,
 });
+const ESCAPE_STOP_CONFIRMATION_MS = 1_000;
 
 function ContextUsageIndicator({
   usage,
@@ -1216,11 +1217,63 @@ function Composer({
   onApproval: ChatWorkspaceProps["onApproval"];
 }) {
   const [draft, setDraft] = useState("");
+  const [isEscapeStopArmed, setIsEscapeStopArmed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const onCancelRef = useRef(onCancel);
+  onCancelRef.current = onCancel;
 
   useEffect(() => {
     window.requestAnimationFrame(() => textareaRef.current?.focus());
   }, []);
+
+  useEffect(() => {
+    setIsEscapeStopArmed(false);
+
+    if (!isRunning || !activeRunId || approval) {
+      return;
+    }
+
+    const runId = activeRunId;
+    let escapeStopArmed = false;
+    let resetTimeout: number | undefined;
+
+    function resetEscapeStop() {
+      escapeStopArmed = false;
+      setIsEscapeStopArmed(false);
+      if (resetTimeout !== undefined) {
+        window.clearTimeout(resetTimeout);
+        resetTimeout = undefined;
+      }
+    }
+
+    function handleEscape(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape" || event.repeat) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (escapeStopArmed) {
+        resetEscapeStop();
+        onCancelRef.current(runId);
+        return;
+      }
+
+      escapeStopArmed = true;
+      setIsEscapeStopArmed(true);
+      resetTimeout = window.setTimeout(
+        resetEscapeStop,
+        ESCAPE_STOP_CONFIRMATION_MS,
+      );
+    }
+
+    window.addEventListener("keydown", handleEscape, true);
+    return () => {
+      window.removeEventListener("keydown", handleEscape, true);
+      resetEscapeStop();
+    };
+  }, [activeRunId, approval, isRunning]);
 
   function submit() {
     const prompt = draft.trim();
@@ -1302,13 +1355,23 @@ function Composer({
                       size="icon-sm"
                       variant="secondary"
                       className="size-7 rounded-full"
-                      aria-label="Stop response"
+                      aria-label={
+                        isEscapeStopArmed
+                          ? "Press Escape again to stop response"
+                          : "Stop response"
+                      }
                       onClick={() => onCancel(activeRunId)}
                     >
-                      <Square
-                        className="size-3 fill-current"
-                        aria-hidden="true"
-                      />
+                      {isEscapeStopArmed ? (
+                        <span className="text-[9px] leading-none font-semibold tracking-[-0.03em]">
+                          ESC
+                        </span>
+                      ) : (
+                        <Square
+                          className="size-3 fill-current"
+                          aria-hidden="true"
+                        />
+                      )}
                     </Button>
                   ) : (
                     <Button
