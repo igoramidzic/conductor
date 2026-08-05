@@ -5,6 +5,7 @@ import type {
   AgentEvent,
   AgentModel,
   AgentRunRequest,
+  GeminiAccountUsage,
   TerminalCreateRequest,
   TerminalEvent,
   TerminalOutputSnapshot,
@@ -20,6 +21,8 @@ contextBridge.exposeInMainWorld("electron", {
     ipcRenderer.invoke("dialog:select-source-folder") as Promise<string | null>,
   listAgentModels: () =>
     ipcRenderer.invoke("agent:models") as Promise<AgentModel[]>,
+  getGeminiUsage: () =>
+    ipcRenderer.invoke("agent:gemini-usage") as Promise<GeminiAccountUsage>,
   runAgent: (request: AgentRunRequest) =>
     ipcRenderer.invoke("agent:run", request) as Promise<void>,
   cancelAgent: (runId: string) =>

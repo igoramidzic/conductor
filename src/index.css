@@ -222,6 +222,21 @@
   opacity: 0;
 }
 
+.sidebar-collapse {
+  height: var(--collapsible-panel-height);
+  overflow: hidden;
+  opacity: 1;
+  transition:
+    height 240ms cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 160ms ease-out;
+}
+
+.sidebar-collapse[data-starting-style],
+.sidebar-collapse[data-ending-style] {
+  height: 0;
+  opacity: 0;
+}
+
 .execution-node {
   box-shadow: 0 0 0 4px var(--background);
 }
@@ -383,9 +398,62 @@
   color: var(--sidebar-accent-foreground);
 }
 
+[data-sidebar-action-row="true"]:has([data-sidebar-add-action="true"]:hover),
+[data-sidebar-action-row="true"]:has(
+  [data-sidebar-add-action="true"]:focus-visible
+) {
+  isolation: isolate;
+}
+
+[data-sidebar-action-row="true"]:has(
+  [data-sidebar-add-action="true"]:hover
+)::before,
+[data-sidebar-action-row="true"]:has(
+  [data-sidebar-add-action="true"]:focus-visible
+)::before {
+  position: absolute;
+  z-index: -1;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 2rem;
+  border-radius: calc(var(--radius) - 2px);
+  background-color: var(--sidebar-accent);
+  content: "";
+  pointer-events: none;
+}
+
+[data-sidebar-section-trigger="true"],
+[data-sidebar-section-trigger="true"]:hover,
+[data-sidebar-section-trigger="true"]:focus-visible {
+  color: color-mix(in srgb, var(--sidebar-foreground) 48%, transparent);
+}
+
+[data-sidebar-section-trigger="true"] > svg {
+  width: 0.75rem;
+  height: 0.75rem;
+  color: color-mix(in srgb, var(--sidebar-foreground) 34%, transparent);
+  opacity: 0;
+  transform: rotate(0deg);
+  transform-origin: center;
+  transition:
+    opacity 140ms ease-out,
+    transform 240ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+[data-sidebar-section-trigger="true"]:hover > svg,
+[data-sidebar-section-trigger="true"]:focus-visible > svg {
+  opacity: 1;
+}
+
+[data-sidebar-section-trigger="true"][data-panel-open] > svg {
+  transform: rotate(90deg);
+}
+
 [data-sidebar-add-action="true"] {
   color: color-mix(in srgb, var(--sidebar-foreground) 45%, transparent);
-  visibility: hidden;
+  opacity: 1;
+  visibility: visible;
 }
 
 [data-sidebar-action-row="true"]:has(> [data-slot="sidebar-menu-button"]:hover)
@@ -665,7 +733,12 @@
     animation: none;
   }
 
-  .execution-collapse {
+  .execution-collapse,
+  .sidebar-collapse {
+    transition: none;
+  }
+
+  [data-sidebar-section-trigger="true"] > svg {
     transition: none;
   }
 

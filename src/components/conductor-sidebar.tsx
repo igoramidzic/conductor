@@ -1,7 +1,19 @@
-import { Archive, Folder, Plus, Settings2 } from "lucide-react";
-import { type CSSProperties, useLayoutEffect, useRef, useState } from "react";
+import { Archive, ChevronRight, Folder, Plus, Settings2 } from "lucide-react";
+import {
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { useTheme } from "@/components/theme-provider";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,8 +35,9 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
+import { UsageMenuItem } from "@/components/usage-menu-item";
 import { cn } from "@/lib/utils";
-import type { ChatSession, Project } from "@/types";
+import type { ChatSession, GeminiAccountUsage, Project } from "@/types";
 
 type ConductorSidebarProps = {
   recentChats: ChatSession[];
@@ -53,7 +66,13 @@ type SessionTitleMetrics = {
 
 const SESSION_TITLE_LOOP_GAP = 52;
 
-function SessionTitle({ title }: { title: string }) {
+function SessionTitle({
+  title,
+  placement,
+}: {
+  title: string;
+  placement: "project" | "recent";
+}) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLSpanElement>(null);
   const [metrics, setMetrics] = useState<SessionTitleMetrics>({
@@ -101,7 +120,10 @@ function SessionTitle({ title }: { title: string }) {
   return (
     <div
       ref={viewportRef}
-      className="session-title relative min-w-0 flex-1 overflow-hidden pl-[26px]"
+      className={cn(
+        "session-title relative min-w-0 flex-1 overflow-hidden",
+        placement === "project" ? "pl-7" : "pl-1",
+      )}
       data-overflow={metrics.overflows ? "true" : "false"}
       style={
         {
@@ -135,11 +157,13 @@ function SessionTitle({ title }: { title: string }) {
 function SessionRow({
   session,
   active,
+  placement,
   onSelect,
   onArchive,
 }: {
   session: ChatSession;
   active: boolean;
+  placement: "project" | "recent";
   onSelect: () => void;
   onArchive: () => void;
 }) {
@@ -150,7 +174,7 @@ function SessionRow({
         className="h-8 overflow-hidden px-1! text-[13px] font-normal text-sidebar-foreground/70"
         onClick={onSelect}
       >
-        <SessionTitle title={session.title} />
+        <SessionTitle title={session.title} placement={placement} />
       </SidebarMenuButton>
       <SidebarMenuAction
         data-session-archive="true"
@@ -169,30 +193,30 @@ function SessionRow({
 
 function SidebarSectionRow({
   label,
-  expanded,
   actionLabel,
-  onToggle,
   onAction,
 }: {
   label: string;
-  expanded: boolean;
   actionLabel: string;
-  onToggle: () => void;
   onAction: () => void;
 }) {
   return (
     <SidebarMenu>
       <SidebarMenuItem data-sidebar-action-row="true">
-        <SidebarMenuButton
-          className="h-8 text-[13px] font-medium text-sidebar-foreground/70"
-          aria-expanded={expanded}
-          onClick={onToggle}
+        <CollapsibleTrigger
+          render={
+            <SidebarMenuButton
+              data-sidebar-section-trigger="true"
+              className="h-8 text-[13px] font-medium"
+            />
+          }
         >
           <span>{label}</span>
-        </SidebarMenuButton>
+          <ChevronRight aria-hidden="true" />
+        </CollapsibleTrigger>
         <SidebarMenuAction
           data-sidebar-add-action="true"
-          showOnHover
+          className="text-sidebar-foreground/45 hover:text-sidebar-foreground"
           aria-label={actionLabel}
           onClick={(event) => {
             event.stopPropagation();
@@ -225,9 +249,46 @@ export function ConductorSidebar({
   onCreateSession,
 }: ConductorSidebarProps) {
   const { theme, setTheme } = useTheme();
+  const [usage, setUsage] = useState<GeminiAccountUsage | null>(null);
+  const [usageLoading, setUsageLoading] = useState(true);
+  const [usageError, setUsageError] = useState<string | null>(null);
+  const usageRequestIdRef = useRef(0);
   const visibleRecentChats = recentChats.filter(
     (session) => !session.archived && session.messages.length > 0,
   );
+
+  const refreshUsage = useCallback(async () => {
+    const requestId = usageRequestIdRef.current + 1;
+    usageRequestIdRef.current = requestId;
+    setUsageLoading(true);
+    setUsageError(null);
+
+    try {
+      const nextUsage = await window.electron.getGeminiUsage();
+      if (requestId === usageRequestIdRef.current) {
+        setUsage(nextUsage);
+      }
+    } catch (refreshError) {
+      if (requestId === usageRequestIdRef.current) {
+        setUsageError(
+          refreshError instanceof Error
+            ? refreshError.message
+            : "Usage could not be loaded.",
+        );
+      }
+    } finally {
+      if (requestId === usageRequestIdRef.current) {
+        setUsageLoading(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshUsage();
+    return () => {
+      usageRequestIdRef.current += 1;
+    };
+  }, [refreshUsage]);
 
   return (
     <Sidebar collapsible="offcanvas" className="border-sidebar-border">
@@ -235,131 +296,144 @@ export function ConductorSidebar({
 
       <SidebarContent className="pt-2">
         <SidebarGroup className="px-2 py-0">
-          <SidebarSectionRow
-            label="Projects"
-            expanded={projectsExpanded}
-            actionLabel="Add project"
-            onToggle={onToggleProjects}
-            onAction={onCreateProject}
-          />
+          <Collapsible open={projectsExpanded} onOpenChange={onToggleProjects}>
+            <SidebarSectionRow
+              label="Projects"
+              actionLabel="Add project"
+              onAction={onCreateProject}
+            />
 
-          {projectsExpanded ? (
-            <SidebarMenu className="mt-0.5 gap-0.5">
-              {projects.length === 0 ? (
-                <SidebarMenuItem>
-                  <div className="flex h-8 items-center px-2 text-xs text-sidebar-foreground/45">
-                    No projects yet.
-                  </div>
-                </SidebarMenuItem>
-              ) : null}
-
-              {projects.map((project) => {
-                const isActive = project.id === pendingProjectId;
-                const visibleSessions = project.sessions.filter(
-                  (session) => !session.archived && session.messages.length > 0,
-                );
-                return (
-                  <SidebarMenuItem
-                    key={project.id}
-                    data-sidebar-action-row="true"
-                  >
-                    <SidebarMenuButton
-                      className={cn(
-                        "h-8 pr-8 text-[13px]",
-                        isActive && "bg-sidebar-accent font-medium",
-                      )}
-                      isActive={isActive}
-                      onClick={() => onToggleProject(project.id)}
-                    >
-                      <Folder
-                        className="size-3.5 text-sidebar-foreground/70"
-                        aria-hidden="true"
-                      />
-                      <span>{project.name}</span>
-                    </SidebarMenuButton>
-                    <SidebarMenuAction
-                      data-sidebar-add-action="true"
-                      showOnHover
-                      aria-label={`New session in ${project.name}`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onCreateSession(project.id);
-                      }}
-                    >
-                      <Plus aria-hidden="true" />
-                    </SidebarMenuAction>
-
-                    {project.expanded ? (
-                      <SidebarMenu className="mt-0.5 gap-0.5">
-                        {visibleSessions.length === 0 ? (
-                          <SidebarMenuItem>
-                            <div className="flex h-8 items-center pl-[30px] text-xs text-sidebar-foreground/45">
-                              No chats
-                            </div>
-                          </SidebarMenuItem>
-                        ) : null}
-                        {visibleSessions.map((session) => {
-                          const sessionIsActive =
-                            session.id === activeSessionId;
-                          return (
-                            <SessionRow
-                              key={session.id}
-                              session={session}
-                              active={sessionIsActive}
-                              onSelect={() =>
-                                onSelectSession(project.id, session.id)
-                              }
-                              onArchive={() =>
-                                onArchiveSession(project.id, session.id)
-                              }
-                            />
-                          );
-                        })}
-                      </SidebarMenu>
-                    ) : null}
+            <CollapsibleContent className="sidebar-collapse">
+              <SidebarMenu className="mt-0.5 gap-0.5">
+                {projects.length === 0 ? (
+                  <SidebarMenuItem>
+                    <div className="flex h-8 items-center px-2 text-xs text-sidebar-foreground/45">
+                      No projects yet.
+                    </div>
                   </SidebarMenuItem>
-                );
-              })}
-            </SidebarMenu>
-          ) : null}
+                ) : null}
+
+                {projects.map((project) => {
+                  const isActive = project.id === pendingProjectId;
+                  const visibleSessions = project.sessions.filter(
+                    (session) =>
+                      !session.archived && session.messages.length > 0,
+                  );
+                  return (
+                    <Collapsible
+                      key={project.id}
+                      open={project.expanded}
+                      onOpenChange={() => onToggleProject(project.id)}
+                      render={
+                        <SidebarMenuItem data-sidebar-action-row="true" />
+                      }
+                    >
+                      <CollapsibleTrigger
+                        render={
+                          <SidebarMenuButton
+                            className={cn(
+                              "h-8 pr-8 text-[13px]",
+                              isActive && "bg-sidebar-accent font-medium",
+                            )}
+                            isActive={isActive}
+                          />
+                        }
+                      >
+                        <Folder
+                          className="size-3.5 text-sidebar-foreground/70"
+                          aria-hidden="true"
+                        />
+                        <span className="min-w-0 truncate">{project.name}</span>
+                      </CollapsibleTrigger>
+                      <SidebarMenuAction
+                        data-sidebar-add-action="true"
+                        className="text-sidebar-foreground/45 hover:text-sidebar-foreground"
+                        aria-label={`New session in ${project.name}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onCreateSession(project.id);
+                        }}
+                      >
+                        <Plus aria-hidden="true" />
+                      </SidebarMenuAction>
+
+                      <CollapsibleContent className="sidebar-collapse">
+                        <SidebarMenu className="mt-0.5 gap-0.5">
+                          {visibleSessions.length === 0 ? (
+                            <SidebarMenuItem>
+                              <div className="flex h-8 items-center pl-[30px] text-xs text-sidebar-foreground/45">
+                                No chats
+                              </div>
+                            </SidebarMenuItem>
+                          ) : null}
+                          {visibleSessions.map((session) => {
+                            const sessionIsActive =
+                              session.id === activeSessionId;
+                            return (
+                              <SessionRow
+                                key={session.id}
+                                session={session}
+                                active={sessionIsActive}
+                                placement="project"
+                                onSelect={() =>
+                                  onSelectSession(project.id, session.id)
+                                }
+                                onArchive={() =>
+                                  onArchiveSession(project.id, session.id)
+                                }
+                              />
+                            );
+                          })}
+                        </SidebarMenu>
+                      </CollapsibleContent>
+                    </Collapsible>
+                  );
+                })}
+              </SidebarMenu>
+            </CollapsibleContent>
+          </Collapsible>
         </SidebarGroup>
 
         <SidebarGroup className="mt-2 px-2 py-0">
-          <SidebarSectionRow
-            label="Recent Chats"
-            expanded={recentChatsExpanded}
-            actionLabel="New chat"
-            onToggle={onToggleRecentChats}
-            onAction={onCreateRecentChat}
-          />
+          <Collapsible
+            open={recentChatsExpanded}
+            onOpenChange={onToggleRecentChats}
+          >
+            <SidebarSectionRow
+              label="Recents"
+              actionLabel="New chat"
+              onAction={onCreateRecentChat}
+            />
 
-          {recentChatsExpanded ? (
-            <SidebarMenu className="mt-0.5 gap-0.5">
-              {visibleRecentChats.length === 0 ? (
-                <SidebarMenuItem>
-                  <div className="flex h-8 items-center px-2 text-xs text-sidebar-foreground/45">
-                    No recent chats.
-                  </div>
-                </SidebarMenuItem>
-              ) : null}
-              {visibleRecentChats.map((session) => (
-                <SessionRow
-                  key={session.id}
-                  session={session}
-                  active={session.id === activeSessionId}
-                  onSelect={() => onSelectRecentChat(session.id)}
-                  onArchive={() => onArchiveRecentChat(session.id)}
-                />
-              ))}
-            </SidebarMenu>
-          ) : null}
+            <CollapsibleContent className="sidebar-collapse">
+              <SidebarMenu className="mt-0.5 gap-0.5">
+                {visibleRecentChats.length === 0 ? (
+                  <SidebarMenuItem>
+                    <div className="flex h-8 items-center px-2 text-xs text-sidebar-foreground/45">
+                      No recent chats.
+                    </div>
+                  </SidebarMenuItem>
+                ) : null}
+                {visibleRecentChats.map((session) => (
+                  <SessionRow
+                    key={session.id}
+                    session={session}
+                    active={session.id === activeSessionId}
+                    placement="recent"
+                    onSelect={() => onSelectRecentChat(session.id)}
+                    onArchive={() => onArchiveRecentChat(session.id)}
+                  />
+                ))}
+              </SidebarMenu>
+            </CollapsibleContent>
+          </Collapsible>
         </SidebarGroup>
       </SidebarContent>
 
       <SidebarFooter className="border-t border-sidebar-border p-2">
         <SidebarMenu>
           <SidebarMenuItem>
-            <DropdownMenu>
+            <DropdownMenu modal={false}>
               <DropdownMenuTrigger
                 render={
                   <SidebarMenuButton className="h-9 text-[13px] text-sidebar-foreground/75" />
@@ -374,6 +448,12 @@ export function ConductorSidebar({
                 sideOffset={8}
                 className="w-56"
               >
+                <UsageMenuItem
+                  usage={usage}
+                  loading={usageLoading}
+                  error={usageError}
+                  onRefresh={refreshUsage}
+                />
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger>
                     <span>Theme</span>

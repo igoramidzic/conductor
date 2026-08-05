@@ -80,6 +80,7 @@ import {
   MessageScrollerProvider,
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { SidebarInset, useSidebar } from "@/components/ui/sidebar";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -477,11 +478,16 @@ function ExecutionTrace({
         </Marker>
       </CollapsibleTrigger>
       <CollapsibleContent className="execution-collapse execution-trace min-w-0 pl-0.5">
-        <div className="grid min-w-0 gap-0 pt-1.5 pb-0.5">
-          {actionActivities.map((activity) => (
-            <ToolCall key={activity.id} activity={activity} />
-          ))}
-        </div>
+        <ScrollArea
+          className="max-h-50 min-w-0"
+          viewportClassName="h-auto max-h-50 scroll-fade-y"
+        >
+          <div className="grid min-w-0 gap-0 pt-1.5 pb-0.5">
+            {actionActivities.map((activity) => (
+              <ToolCall key={activity.id} activity={activity} />
+            ))}
+          </div>
+        </ScrollArea>
       </CollapsibleContent>
     </Collapsible>
   );
@@ -1263,8 +1269,8 @@ function Composer({
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="Do anything"
-                rows={1}
-                className="block max-h-32 min-h-9 min-w-0 resize-none overflow-y-auto rounded-none border-0 bg-transparent px-3.5 pt-2.5 pb-1 text-[14px] leading-5 shadow-none focus-visible:border-transparent focus-visible:ring-0 dark:bg-transparent"
+                rows={2}
+                className="block max-h-32 min-h-[3.375rem] min-w-0 resize-none overflow-y-auto rounded-none border-0 bg-transparent px-3.5 pt-2.5 pb-1 text-[14px] leading-5 shadow-none focus-visible:border-transparent focus-visible:ring-0 dark:bg-transparent"
               />
               <CardFooter className="min-h-10 justify-between gap-2 rounded-b-xl border-0 bg-card px-2.5 py-1.5">
                 <AccessModePicker

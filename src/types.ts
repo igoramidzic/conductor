@@ -93,6 +93,46 @@ export type AgentUsage = {
   processedTokens?: number;
 };
 
+export type GeminiQuotaModelUsage = {
+  name: string;
+  usedPercent: number;
+  remainingPercent: number;
+  resetLabel?: string;
+};
+
+export type GeminiQuotaSnapshot = {
+  period: "daily";
+  tier?: string;
+  authMethod?: string;
+  limit?: number;
+  used?: number;
+  remaining?: number;
+  usedPercent?: number;
+  resetLabel?: string;
+  models: GeminiQuotaModelUsage[];
+};
+
+export type GeminiTokenTotals = {
+  periodStart: string;
+  periodEnd: string;
+  total: number;
+  input: number;
+  output: number;
+  cached: number;
+  thoughts: number;
+  tool: number;
+  modelCalls: number;
+  sessions: number;
+};
+
+export type GeminiAccountUsage = {
+  provider: "gemini";
+  measuredAt: string;
+  tokens: GeminiTokenTotals;
+  quota: GeminiQuotaSnapshot;
+  quotaError?: string;
+};
+
 export type ChatSession = {
   id: string;
   title: string;

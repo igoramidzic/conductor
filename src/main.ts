@@ -14,6 +14,7 @@ import started from "electron-squirrel-startup";
 import * as pty from "node-pty";
 
 import { getAgentAccessArgs, resolveAgentAccessMode } from "./agent-access";
+import { getGeminiAccountUsage } from "./gemini-usage";
 import {
   type AgentActivityKind,
   type AgentApprovalRequest,
@@ -2254,6 +2255,11 @@ ipcMain.handle("dialog:select-source-folder", async (event) => {
 });
 
 ipcMain.handle("agent:models", () => listAvailableModels());
+
+ipcMain.handle("agent:gemini-usage", () => {
+  const executable = requireAgentExecutable("gemini");
+  return getGeminiAccountUsage(executable, app.getPath("home"));
+});
 
 ipcMain.handle("agent:run", (event, request: AgentRunRequest) => {
   assertRunRequest(request);

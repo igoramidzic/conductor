@@ -3,6 +3,7 @@ import type {
   AgentEvent,
   AgentModel,
   AgentRunRequest,
+  GeminiAccountUsage,
   TerminalCreateRequest,
   TerminalEvent,
   TerminalOutputSnapshot,
@@ -18,6 +19,7 @@ declare global {
       platform: NodeJS.Platform;
       selectSourceFolder: () => Promise<string | null>;
       listAgentModels: () => Promise<AgentModel[]>;
+      getGeminiUsage: () => Promise<GeminiAccountUsage>;
       runAgent: (request: AgentRunRequest) => Promise<void>;
       cancelAgent: (runId: string) => Promise<boolean>;
       respondToAgentApproval: (

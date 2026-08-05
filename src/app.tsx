@@ -585,7 +585,23 @@ function ConductorApp() {
   }
 
   function createSession(projectId: string | null) {
-    if (pendingSessionRef.current) {
+    const currentPending = pendingSessionRef.current;
+    if (currentPending) {
+      if (currentPending.projectId !== projectId) {
+        const nextPending = { ...currentPending, projectId };
+        pendingSessionRef.current = nextPending;
+        setPendingSession(nextPending);
+      }
+      setWorkspace((current) => ({
+        ...current,
+        recentChatsExpanded:
+          projectId === null ? true : current.recentChatsExpanded,
+        activeProjectId: projectId,
+        activeSessionId: null,
+        projects: current.projects.map((project) =>
+          project.id === projectId ? { ...project, expanded: true } : project,
+        ),
+      }));
       return;
     }
     const defaultModel = defaultModelForNewSession();
