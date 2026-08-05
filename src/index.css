@@ -452,8 +452,11 @@
 
 [data-sidebar-add-action="true"] {
   color: color-mix(in srgb, var(--sidebar-foreground) 45%, transparent);
-  opacity: 1;
-  visibility: visible;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    color 120ms ease-out,
+    opacity 120ms ease-out;
 }
 
 [data-sidebar-action-row="true"]:has(> [data-slot="sidebar-menu-button"]:hover)
@@ -468,6 +471,7 @@
     > [data-sidebar-add-action="true"]:focus-visible
   )
   > [data-sidebar-add-action="true"] {
+  opacity: 1;
   visibility: visible;
 }
 
