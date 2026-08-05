@@ -6,10 +6,15 @@ import {
   ChartPie,
   Check,
   ChevronDown,
+  Copy,
   FilePenLine,
   Folder,
+  FolderOpen,
+  GitFork,
   Globe2,
   ListChecks,
+  LoaderCircle,
+  Monitor,
   Plus,
   Search,
   ShieldCheck,
@@ -60,9 +65,12 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -95,6 +103,8 @@ import type {
   ChatMessage,
   ChatSession,
   Project,
+  SessionExecutionMode,
+  SessionWorktree,
 } from "@/types";
 
 type ChatWorkspaceProps = {
@@ -109,7 +119,8 @@ type ChatWorkspaceProps = {
   onProjectChange: (projectId: string | null) => void;
   onModelChange: (model: AgentModel) => void;
   onAccessModeChange: (mode: AgentAccessMode) => void;
-  onSend: (prompt: string) => void;
+  onExecutionModeChange: (mode: SessionExecutionMode) => void;
+  onSend: (prompt: string) => Promise<boolean>;
   onCancel: (runId: string) => void;
   onApproval: (
     runId: string,
@@ -118,7 +129,153 @@ type ChatWorkspaceProps = {
   ) => void;
   terminalOpen: boolean;
   onTerminalOpenChange: (open: boolean) => void;
+  preparingSession: boolean;
+  preparationError?: string;
 };
+
+function WorktreeDetails({ worktree }: { worktree: SessionWorktree }) {
+  return (
+    <div className="space-y-2 px-2 py-1.5">
+      <div>
+        <p className="text-[10px] font-medium text-muted-foreground">Branch</p>
+        <p className="truncate font-mono text-[10px] text-foreground">
+          {worktree.branch}
+        </p>
+      </div>
+      <div>
+        <p className="text-[10px] font-medium text-muted-foreground">
+          Created from
+        </p>
+        <p className="truncate font-mono text-[10px] text-foreground">
+          {worktree.baseRef}
+        </p>
+      </div>
+      <div>
+        <p className="text-[10px] font-medium text-muted-foreground">Path</p>
+        <p
+          className="truncate font-mono text-[10px] text-foreground"
+          title={worktree.path}
+        >
+          {worktree.path}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function WorktreeDetailsMenu({ worktree }: { worktree: SessionWorktree }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={<Button type="button" variant="ghost" size="sm" />}
+        className="mr-1 h-7 max-w-44 gap-1.5 px-2 text-[11px] text-muted-foreground data-popup-open:bg-accent data-popup-open:text-foreground"
+        aria-label={`Worktree: ${worktree.name}`}
+      >
+        <GitFork className="size-3.5 shrink-0" aria-hidden="true" />
+        <span className="truncate">{worktree.name}</span>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" sideOffset={6} className="w-80">
+        <DropdownMenuGroup>
+          <DropdownMenuLabel className="px-2 pt-1.5 pb-0.5 text-[10px] font-semibold tracking-[0.08em] uppercase">
+            Session worktree
+          </DropdownMenuLabel>
+          <WorktreeDetails worktree={worktree} />
+        </DropdownMenuGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          className="h-8 px-2 text-xs"
+          onClick={() => void navigator.clipboard.writeText(worktree.path)}
+        >
+          <Copy aria-hidden="true" />
+          Copy path
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className="h-8 px-2 text-xs"
+          onClick={() => void window.electron.revealWorktree(worktree.path)}
+        >
+          <FolderOpen aria-hidden="true" />
+          Show in folder
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function SessionLocationPicker({
+  session,
+  onChange,
+}: {
+  session: ChatSession;
+  onChange: (mode: SessionExecutionMode) => void;
+}) {
+  const mode = session.executionMode ?? "local";
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={<Button type="button" variant="ghost" size="sm" />}
+        className="h-7 min-w-0 max-w-40 justify-start gap-1.5 rounded-full bg-background/80 px-2.5 text-[11px] font-medium text-foreground ring-1 ring-border/70 hover:bg-background data-popup-open:bg-background"
+        aria-label={
+          mode === "worktree" ? "Session: Worktree" : "Session: Local"
+        }
+      >
+        {mode === "worktree" ? (
+          <GitFork className="size-3.5 shrink-0" aria-hidden="true" />
+        ) : (
+          <Monitor className="size-3.5 shrink-0" aria-hidden="true" />
+        )}
+        <span className="truncate">
+          {mode === "worktree" ? "Worktree" : "Local"}
+        </span>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        side="top"
+        align="start"
+        sideOffset={8}
+        className="w-72"
+      >
+        <DropdownMenuRadioGroup
+          value={mode}
+          onValueChange={(value) => {
+            if ((value === "local" || value === "worktree") && value !== mode) {
+              onChange(value);
+            }
+          }}
+        >
+          <DropdownMenuLabel className="px-2 pt-1.5 pb-1 text-[10px] font-semibold tracking-[0.08em] uppercase">
+            Session location
+          </DropdownMenuLabel>
+          <DropdownMenuRadioItem
+            value="local"
+            closeOnClick
+            className="items-start gap-2 py-2 pr-8 pl-2"
+          >
+            <Monitor className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+            <span className="min-w-0">
+              <span className="block text-xs font-medium">Local</span>
+              <span className="mt-0.5 block text-[10px] leading-4 text-muted-foreground">
+                Work directly in the project folder.
+              </span>
+            </span>
+          </DropdownMenuRadioItem>
+          <DropdownMenuRadioItem
+            value="worktree"
+            closeOnClick
+            className="items-start gap-2 py-2 pr-8 pl-2"
+          >
+            <GitFork className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+            <span className="min-w-0">
+              <span className="block text-xs font-medium">Worktree</span>
+              <span className="mt-0.5 block text-[10px] leading-4 text-muted-foreground">
+                Create an isolated branch from the current commit when you send.
+              </span>
+            </span>
+          </DropdownMenuRadioItem>
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
 function WorkspaceHeader({
   project,
@@ -149,6 +306,9 @@ function WorkspaceHeader({
         </div>
       </div>
       <div className="app-no-drag relative z-10 flex shrink-0 items-center pr-2.5">
+        {session?.worktree ? (
+          <WorktreeDetailsMenu worktree={session.worktree} />
+        ) : null}
         <Button
           type="button"
           variant="ghost"
@@ -1183,13 +1343,17 @@ function Composer({
   models,
   modelsLoading,
   accessMode,
+  session,
   project,
   projects,
   isNewSession,
+  preparingSession,
+  preparationError,
   onProjectChange,
   onCreateProject,
   onModelChange,
   onAccessModeChange,
+  onExecutionModeChange,
   onSend,
   onCancel,
   onApproval,
@@ -1205,18 +1369,23 @@ function Composer({
   models: AgentModel[];
   modelsLoading: boolean;
   accessMode: AgentAccessMode;
+  session: ChatSession;
   project: Project | null;
   projects: Project[];
   isNewSession: boolean;
+  preparingSession: boolean;
+  preparationError?: string;
   onProjectChange: (projectId: string | null) => void;
   onCreateProject: () => void;
   onModelChange: (model: AgentModel) => void;
   onAccessModeChange: (mode: AgentAccessMode) => void;
-  onSend: (prompt: string) => void;
+  onExecutionModeChange: (mode: SessionExecutionMode) => void;
+  onSend: ChatWorkspaceProps["onSend"];
   onCancel: (runId: string) => void;
   onApproval: ChatWorkspaceProps["onApproval"];
 }) {
   const [draft, setDraft] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [isEscapeStopArmed, setIsEscapeStopArmed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const onCancelRef = useRef(onCancel);
@@ -1275,19 +1444,26 @@ function Composer({
     };
   }, [activeRunId, approval, isRunning]);
 
-  function submit() {
+  async function submit() {
     const prompt = draft.trim();
-    if (!prompt || isRunning) {
+    if (!prompt || isRunning || isSubmitting || preparingSession) {
       return;
     }
-    setDraft("");
-    onSend(prompt);
+    setIsSubmitting(true);
+    try {
+      const sent = await onSend(prompt);
+      if (sent) {
+        setDraft("");
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      submit();
+      void submit();
     }
   }
 
@@ -1300,13 +1476,21 @@ function Composer({
           aria-hidden={!isNewSession}
         >
           {isNewSession ? (
-            <ProjectPicker
-              project={project}
-              projects={projects}
-              placement="card"
-              onChange={onProjectChange}
-              onCreateProject={onCreateProject}
-            />
+            <div className="flex min-w-0 items-center gap-1.5">
+              <ProjectPicker
+                project={project}
+                projects={projects}
+                placement="card"
+                onChange={onProjectChange}
+                onCreateProject={onCreateProject}
+              />
+              {project ? (
+                <SessionLocationPicker
+                  session={session}
+                  onChange={onExecutionModeChange}
+                />
+              ) : null}
+            </div>
           ) : null}
         </div>
 
@@ -1325,10 +1509,20 @@ function Composer({
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={handleKeyDown}
+                disabled={preparingSession}
                 placeholder="Do anything"
                 rows={2}
                 className="block max-h-32 min-h-[3.375rem] min-w-0 resize-none overflow-y-auto rounded-none border-0 bg-transparent px-3.5 pt-2.5 pb-1 text-[14px] leading-5 shadow-none focus-visible:border-transparent focus-visible:ring-0 dark:bg-transparent"
               />
+              {preparationError ? (
+                <div className="flex items-start gap-1.5 px-3.5 pb-1.5 text-[11px] leading-4 text-destructive">
+                  <AlertCircle
+                    className="mt-0.5 size-3.5 shrink-0"
+                    aria-hidden="true"
+                  />
+                  <span>{preparationError}</span>
+                </div>
+              ) : null}
               <CardFooter className="min-h-10 justify-between gap-2 rounded-b-xl border-0 bg-card px-2.5 py-1.5">
                 <AccessModePicker
                   provider={provider ?? "gemini"}
@@ -1378,11 +1572,22 @@ function Composer({
                       type="button"
                       size="icon-sm"
                       className="size-7 rounded-full shadow-sm"
-                      disabled={!draft.trim()}
-                      aria-label="Send message"
-                      onClick={submit}
+                      disabled={
+                        !draft.trim() || isSubmitting || preparingSession
+                      }
+                      aria-label={
+                        preparingSession ? "Creating worktree" : "Send message"
+                      }
+                      onClick={() => void submit()}
                     >
-                      <ArrowUp aria-hidden="true" />
+                      {isSubmitting || preparingSession ? (
+                        <LoaderCircle
+                          className="animate-spin"
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <ArrowUp aria-hidden="true" />
+                      )}
                     </Button>
                   )}
                 </div>
@@ -1406,9 +1611,12 @@ function SessionView({
   onCreateProject,
   onModelChange,
   onAccessModeChange,
+  onExecutionModeChange,
   onSend,
   onCancel,
   onApproval,
+  preparingSession,
+  preparationError,
 }: {
   project: Project | null;
   session: ChatSession;
@@ -1420,9 +1628,12 @@ function SessionView({
   onCreateProject: () => void;
   onModelChange: (model: AgentModel) => void;
   onAccessModeChange: (mode: AgentAccessMode) => void;
-  onSend: (prompt: string) => void;
+  onExecutionModeChange: ChatWorkspaceProps["onExecutionModeChange"];
+  onSend: ChatWorkspaceProps["onSend"];
   onCancel: (runId: string) => void;
   onApproval: ChatWorkspaceProps["onApproval"];
+  preparingSession: boolean;
+  preparationError?: string;
 }) {
   const activeMessage = [...session.messages]
     .reverse()
@@ -1487,13 +1698,17 @@ function SessionView({
         models={availableModels}
         modelsLoading={modelsLoading}
         accessMode={accessMode}
+        session={session}
         project={project}
         projects={projects}
         isNewSession={session.messages.length === 0}
+        preparingSession={preparingSession}
+        preparationError={preparationError}
         onProjectChange={onProjectChange}
         onCreateProject={onCreateProject}
         onModelChange={onModelChange}
         onAccessModeChange={onAccessModeChange}
+        onExecutionModeChange={onExecutionModeChange}
         onSend={onSend}
         onCancel={onCancel}
         onApproval={onApproval}
@@ -1514,11 +1729,14 @@ export function ChatWorkspace({
   onProjectChange,
   onModelChange,
   onAccessModeChange,
+  onExecutionModeChange,
   onSend,
   onCancel,
   onApproval,
   terminalOpen,
   onTerminalOpenChange,
+  preparingSession,
+  preparationError,
 }: ChatWorkspaceProps) {
   return (
     <SidebarInset className="min-h-0 min-w-0 overflow-hidden">
@@ -1561,14 +1779,18 @@ export function ChatWorkspace({
             onCreateProject={onCreateProject}
             onModelChange={onModelChange}
             onAccessModeChange={onAccessModeChange}
+            onExecutionModeChange={onExecutionModeChange}
             onSend={onSend}
             onCancel={onCancel}
             onApproval={onApproval}
+            preparingSession={preparingSession}
+            preparationError={preparationError}
           />
         )}
       </div>
       <TerminalPanel
         project={project}
+        session={session}
         open={terminalOpen}
         onClose={() => onTerminalOpenChange(false)}
       />

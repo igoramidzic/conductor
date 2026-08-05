@@ -6,6 +6,7 @@ import type {
   AgentModel,
   AgentRunRequest,
   GeminiAccountUsage,
+  SessionWorktree,
   TerminalCreateRequest,
   TerminalEvent,
   TerminalOutputSnapshot,
@@ -13,12 +14,22 @@ import type {
   TerminalTab,
   TerminalTargetRequest,
   TerminalWriteRequest,
+  WorktreeCreateRequest,
 } from "./types";
 
 contextBridge.exposeInMainWorld("electron", {
   platform: process.platform,
+  loadWorkspace: () =>
+    ipcRenderer.invoke("workspace:load") as Promise<string | null>,
+  saveWorkspace: (serialized: string) =>
+    ipcRenderer.invoke("workspace:save", serialized) as Promise<void>,
+  openDevTools: () => ipcRenderer.invoke("devtools:open") as Promise<void>,
   selectSourceFolder: () =>
     ipcRenderer.invoke("dialog:select-source-folder") as Promise<string | null>,
+  createWorktree: (request: WorktreeCreateRequest) =>
+    ipcRenderer.invoke("worktree:create", request) as Promise<SessionWorktree>,
+  revealWorktree: (worktreePath: string) =>
+    ipcRenderer.invoke("worktree:reveal", worktreePath) as Promise<void>,
   listAgentModels: () =>
     ipcRenderer.invoke("agent:models") as Promise<AgentModel[]>,
   getGeminiUsage: () =>

@@ -57,6 +57,21 @@ On first use:
 
 The built-in terminal opens in the selected project's source folder.
 
+## Worktree sessions
+
+For a project-backed conversation, use the **Local** picker above the composer
+to choose where the session runs:
+
+- **Local** runs the agent and terminal directly in the selected project folder.
+- **Worktree** creates a session-owned Git branch and checkout from the
+  project's current commit when the first prompt is sent.
+
+Managed worktrees are stored under
+`~/.conductor/worktrees/<session-id>/<repository>`. Conductor names the
+worktree from the first prompt, shows that name in the session header, and lets
+you inspect the branch, base ref, and path or reveal the checkout in your file
+manager. Archiving a session keeps its worktree and branch intact.
+
 ## Agent executable discovery
 
 Conductor looks for each agent executable in this order:

@@ -4,6 +4,7 @@ import type {
   AgentModel,
   AgentRunRequest,
   GeminiAccountUsage,
+  SessionWorktree,
   TerminalCreateRequest,
   TerminalEvent,
   TerminalOutputSnapshot,
@@ -11,13 +12,21 @@ import type {
   TerminalTab,
   TerminalTargetRequest,
   TerminalWriteRequest,
+  WorktreeCreateRequest,
 } from "./types";
 
 declare global {
   interface Window {
     electron: {
       platform: NodeJS.Platform;
+      loadWorkspace: () => Promise<string | null>;
+      saveWorkspace: (serialized: string) => Promise<void>;
+      openDevTools: () => Promise<void>;
       selectSourceFolder: () => Promise<string | null>;
+      createWorktree: (
+        request: WorktreeCreateRequest,
+      ) => Promise<SessionWorktree>;
+      revealWorktree: (worktreePath: string) => Promise<void>;
       listAgentModels: () => Promise<AgentModel[]>;
       getGeminiUsage: () => Promise<GeminiAccountUsage>;
       runAgent: (request: AgentRunRequest) => Promise<void>;

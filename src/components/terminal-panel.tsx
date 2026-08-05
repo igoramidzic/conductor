@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
 import {
+  type ChatSession,
   type Project,
   STANDALONE_TERMINAL_GROUP_ID,
   type TerminalEvent,
@@ -14,6 +15,7 @@ import {
 
 type TerminalPanelProps = {
   project: Project | null;
+  session: ChatSession | null;
   open: boolean;
   onClose: () => void;
 };
@@ -252,9 +254,18 @@ function TerminalViewport({
   );
 }
 
-export function TerminalPanel({ project, open, onClose }: TerminalPanelProps) {
-  const projectId = project?.id ?? STANDALONE_TERMINAL_GROUP_ID;
-  const sourceFolder = project?.sourceFolder;
+export function TerminalPanel({
+  project,
+  session,
+  open,
+  onClose,
+}: TerminalPanelProps) {
+  const projectId =
+    session?.worktree?.workingDirectory && project
+      ? session.id
+      : (project?.id ?? STANDALONE_TERMINAL_GROUP_ID);
+  const sourceFolder =
+    session?.worktree?.workingDirectory ?? project?.sourceFolder;
   const [tabs, setTabs] = useState<TerminalTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [loadedProjectId, setLoadedProjectId] = useState<string | null>(null);
@@ -407,7 +418,13 @@ export function TerminalPanel({ project, open, onClose }: TerminalPanelProps) {
     <section
       className="terminal-panel app-no-drag relative shrink-0 overflow-hidden bg-background text-foreground"
       data-open={isVisible}
-      aria-label={project ? `${project.name} terminal` : "Standalone terminal"}
+      aria-label={
+        session?.worktree
+          ? `${session.worktree.name} worktree terminal`
+          : project
+            ? `${project.name} terminal`
+            : "Standalone terminal"
+      }
       aria-hidden={!isVisible}
     >
       <div className="terminal-panel-inner flex h-full min-h-0 flex-col border-t border-border">

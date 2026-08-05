@@ -84,6 +84,17 @@ export type ChatMessage = {
   approval?: AgentApprovalRequest;
 };
 
+export type SessionExecutionMode = "local" | "worktree";
+
+export type SessionWorktree = {
+  name: string;
+  path: string;
+  workingDirectory: string;
+  branch: string;
+  baseRef: string;
+  createdAt: number;
+};
+
 export type AgentUsage = {
   inputTokens: number;
   outputTokens: number;
@@ -138,6 +149,8 @@ export type ChatSession = {
   title: string;
   createdAt: number;
   archived: boolean;
+  executionMode?: SessionExecutionMode;
+  worktree?: SessionWorktree;
   provider?: AgentProvider;
   model?: string;
   conversationId?: string;
@@ -215,6 +228,12 @@ export type TerminalEvent =
       type: "exit";
       exitCode: number;
     };
+
+export type WorktreeCreateRequest = {
+  sessionId: string;
+  sourceFolder: string;
+  name: string;
+};
 
 export type AgentRunRequest = {
   runId: string;

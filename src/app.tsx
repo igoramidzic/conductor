@@ -35,6 +35,8 @@ import type {
   ChatMessage,
   ChatSession,
   Project,
+  SessionExecutionMode,
+  SessionWorktree,
   WorkspaceState,
 } from "@/types";
 
@@ -109,6 +111,24 @@ function normalizeUsage(value: unknown): AgentUsage | undefined {
   };
 }
 
+function normalizeWorktree(value: unknown): SessionWorktree | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const worktree = value as Partial<SessionWorktree>;
+  if (
+    typeof worktree.name !== "string" ||
+    typeof worktree.path !== "string" ||
+    typeof worktree.workingDirectory !== "string" ||
+    typeof worktree.branch !== "string" ||
+    typeof worktree.baseRef !== "string" ||
+    typeof worktree.createdAt !== "number"
+  ) {
+    return undefined;
+  }
+  return worktree as SessionWorktree;
+}
+
 function migrateProvider(value: unknown): AgentProvider | undefined {
   if (value === "agy") {
     return "gemini";
@@ -118,9 +138,8 @@ function migrateProvider(value: unknown): AgentProvider | undefined {
     : undefined;
 }
 
-function loadWorkspace(): WorkspaceState {
+function parseWorkspace(stored: string | null): WorkspaceState {
   try {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
     if (!stored) {
       return emptyWorkspace;
     }
@@ -137,9 +156,15 @@ function loadWorkspace(): WorkspaceState {
         | undefined;
       const incompatibleConversation =
         legacyProvider === "agy" || legacyConversationProvider === "agy";
+      const worktree = normalizeWorktree(session.worktree);
       return {
         ...session,
         archived: session.archived ?? false,
+        executionMode:
+          worktree || session.executionMode === "worktree"
+            ? "worktree"
+            : "local",
+        worktree,
         provider: migrateProvider(legacyProvider),
         model: legacyProvider === "agy" ? "auto" : session.model,
         conversationId: incompatibleConversation
@@ -237,10 +262,30 @@ function loadWorkspace(): WorkspaceState {
   }
 }
 
+function loadLocalWorkspace() {
+  return parseWorkspace(window.localStorage.getItem(STORAGE_KEY));
+}
+
+function workspaceHasContent(workspace: WorkspaceState) {
+  return workspace.projects.length > 0 || workspace.recentChats.length > 0;
+}
+
 function titleFromPrompt(prompt: string) {
   const title =
     prompt.split("\n")[0]?.replace(/\s+/g, " ").trim() ?? "New session";
   return title || "New session";
+}
+
+function worktreeNameFromPrompt(prompt: string) {
+  const normalized = titleFromPrompt(prompt)
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+    .replace(/-+$/g, "");
+  return normalized || "new-session";
 }
 
 function updateRun(
@@ -467,9 +512,13 @@ function FloatingSidebarTrigger() {
 }
 
 function ConductorApp() {
-  const [workspace, setWorkspace] = useState<WorkspaceState>(loadWorkspace);
+  const [workspace, setWorkspace] =
+    useState<WorkspaceState>(loadLocalWorkspace);
   const workspaceRef = useRef(workspace);
   workspaceRef.current = workspace;
+  const hasPersistentWorkspaceRef = useRef(false);
+  const [workspacePersistenceReady, setWorkspacePersistenceReady] =
+    useState(false);
   const [availableModels, setAvailableModels] = useState<AgentModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
@@ -479,10 +528,75 @@ function ConductorApp() {
     session: ChatSession;
   } | null>(null);
   const pendingSessionRef = useRef(pendingSession);
+  const [preparingSessionId, setPreparingSessionId] = useState<string | null>(
+    null,
+  );
+  const [sessionPreparationError, setSessionPreparationError] = useState<{
+    sessionId: string;
+    message: string;
+  } | null>(null);
 
   useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(workspace));
-  }, [workspace]);
+    let active = true;
+    const loadPersistentWorkspace = window.electron.loadWorkspace;
+    const savePersistentWorkspace = window.electron.saveWorkspace;
+
+    if (
+      typeof loadPersistentWorkspace !== "function" ||
+      typeof savePersistentWorkspace !== "function"
+    ) {
+      return;
+    }
+
+    void loadPersistentWorkspace()
+      .then(async (stored) => {
+        if (!active) {
+          return;
+        }
+        if (stored) {
+          hasPersistentWorkspaceRef.current = true;
+          setWorkspace(parseWorkspace(stored));
+          return;
+        }
+
+        const localWorkspace = workspaceRef.current;
+        if (workspaceHasContent(localWorkspace)) {
+          await savePersistentWorkspace(JSON.stringify(localWorkspace));
+          if (active) {
+            hasPersistentWorkspaceRef.current = true;
+          }
+        }
+      })
+      .catch((error) => {
+        console.error("Unable to load the saved workspace.", error);
+      })
+      .finally(() => {
+        if (active) {
+          setWorkspacePersistenceReady(true);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const serialized = JSON.stringify(workspace);
+    window.localStorage.setItem(STORAGE_KEY, serialized);
+
+    if (!workspacePersistenceReady) {
+      return;
+    }
+    if (!hasPersistentWorkspaceRef.current && !workspaceHasContent(workspace)) {
+      return;
+    }
+
+    hasPersistentWorkspaceRef.current = true;
+    void window.electron.saveWorkspace(serialized).catch((error) => {
+      console.error("Unable to save the workspace.", error);
+    });
+  }, [workspace, workspacePersistenceReady]);
 
   useEffect(() => {
     return window.electron.onAgentEvent((event) => {
@@ -556,7 +670,10 @@ function ConductorApp() {
     );
   }
 
-  function clearPendingSession() {
+  function clearPendingSession(sessionId?: string) {
+    if (sessionId && pendingSessionRef.current?.session.id !== sessionId) {
+      return;
+    }
     pendingSessionRef.current = null;
     setPendingSession(null);
   }
@@ -588,7 +705,14 @@ function ConductorApp() {
     const currentPending = pendingSessionRef.current;
     if (currentPending) {
       if (currentPending.projectId !== projectId) {
-        const nextPending = { ...currentPending, projectId };
+        const nextPending = {
+          ...currentPending,
+          projectId,
+          session:
+            projectId === null
+              ? { ...currentPending.session, executionMode: "local" as const }
+              : currentPending.session,
+        };
         pendingSessionRef.current = nextPending;
         setPendingSession(nextPending);
       }
@@ -610,6 +734,7 @@ function ConductorApp() {
       title: "New session",
       createdAt: Date.now(),
       archived: false,
+      executionMode: "local",
       provider: defaultModel?.provider,
       model: defaultModel?.model,
       messages: [],
@@ -632,7 +757,14 @@ function ConductorApp() {
   function selectProject(projectId: string | null) {
     const currentPending = pendingSessionRef.current;
     if (currentPending && currentPending.projectId !== projectId) {
-      const nextPending = { ...currentPending, projectId };
+      const nextPending = {
+        ...currentPending,
+        projectId,
+        session:
+          projectId === null
+            ? { ...currentPending.session, executionMode: "local" as const }
+            : currentPending.session,
+      };
       pendingSessionRef.current = nextPending;
       setPendingSession(nextPending);
     }
@@ -828,9 +960,87 @@ function ConductorApp() {
     }));
   }
 
-  function sendPrompt(prompt: string) {
-    if (!activeSession) {
+  function selectExecutionMode(executionMode: SessionExecutionMode) {
+    if (
+      !activeProject ||
+      !activeSession ||
+      activeSession.executionMode === executionMode ||
+      activeSession.messages.length > 0 ||
+      activeSession.worktree
+    ) {
       return;
+    }
+
+    setSessionPreparationError(null);
+    if (pendingSession?.session.id === activeSession.id) {
+      const nextPending = {
+        ...pendingSession,
+        session: {
+          ...pendingSession.session,
+          executionMode,
+        },
+      };
+      pendingSessionRef.current = nextPending;
+      setPendingSession(nextPending);
+      return;
+    }
+
+    const projectId = activeProject.id;
+    const sessionId = activeSession.id;
+    setWorkspace((current) => ({
+      ...current,
+      projects: current.projects.map((project) =>
+        project.id === projectId
+          ? {
+              ...project,
+              sessions: project.sessions.map((session) =>
+                session.id === sessionId
+                  ? { ...session, executionMode }
+                  : session,
+              ),
+            }
+          : project,
+      ),
+    }));
+  }
+
+  async function sendPrompt(prompt: string) {
+    if (!activeSession) {
+      return false;
+    }
+
+    const projectId = activeProject?.id ?? null;
+    const sessionId = activeSession.id;
+    let runSession = activeSession;
+    setSessionPreparationError(null);
+
+    if (
+      activeProject &&
+      activeSession.executionMode === "worktree" &&
+      !activeSession.worktree
+    ) {
+      setPreparingSessionId(sessionId);
+      try {
+        const worktree = await window.electron.createWorktree({
+          sessionId,
+          sourceFolder: activeProject.sourceFolder,
+          name: worktreeNameFromPrompt(prompt),
+        });
+        runSession = { ...activeSession, worktree };
+      } catch (error) {
+        setSessionPreparationError({
+          sessionId,
+          message:
+            error instanceof Error
+              ? error.message
+              : "Could not create the worktree.",
+        });
+        return false;
+      } finally {
+        setPreparingSessionId((current) =>
+          current === sessionId ? null : current,
+        );
+      }
     }
 
     const runId = crypto.randomUUID();
@@ -855,32 +1065,29 @@ function ConductorApp() {
       runId,
     };
 
-    const projectId = activeProject?.id ?? null;
-    const sessionId = activeSession.id;
-    const selectedModel = activeSession.model
+    const selectedModel = runSession.model
       ? {
-          provider: activeSession.provider ?? "gemini",
-          model: activeSession.model,
+          provider: runSession.provider ?? "gemini",
+          model: runSession.model,
         }
       : (workspace.lastModel ??
         availableModels.find(
           (model) =>
             model.provider ===
-            (activeSession.provider ??
-              activeSession.conversationProvider ??
+            (runSession.provider ??
+              runSession.conversationProvider ??
               "gemini"),
         ) ??
         availableModels.find((model) => model.provider === "gemini") ??
         availableModels[0]);
-    const provider =
-      selectedModel?.provider ?? activeSession.provider ?? "gemini";
+    const provider = selectedModel?.provider ?? runSession.provider ?? "gemini";
     const accessMode = resolveAgentAccessMode(
       provider,
       workspace.accessModes?.[provider],
     );
     const conversationId =
-      (activeSession.conversationProvider ?? "gemini") === provider
-        ? activeSession.conversationId
+      (runSession.conversationProvider ?? "gemini") === provider
+        ? runSession.conversationId
         : undefined;
     const isPendingSession = pendingSession?.session.id === sessionId;
     setWorkspace((current) => ({
@@ -898,7 +1105,7 @@ function ConductorApp() {
             ? [
                 ...current.recentChats,
                 {
-                  ...activeSession,
+                  ...runSession,
                   provider,
                   model: selectedModel?.model,
                   title: titleFromPrompt(prompt),
@@ -909,6 +1116,8 @@ function ConductorApp() {
                 session.id === sessionId
                   ? {
                       ...session,
+                      executionMode: runSession.executionMode,
+                      worktree: runSession.worktree,
                       provider,
                       model: selectedModel?.model,
                       title:
@@ -932,7 +1141,7 @@ function ConductorApp() {
                 ? [
                     ...project.sessions,
                     {
-                      ...activeSession,
+                      ...runSession,
                       provider,
                       model: selectedModel?.model,
                       title: titleFromPrompt(prompt),
@@ -943,6 +1152,8 @@ function ConductorApp() {
                     session.id === sessionId
                       ? {
                           ...session,
+                          executionMode: runSession.executionMode,
+                          worktree: runSession.worktree,
                           provider,
                           model: selectedModel?.model,
                           title:
@@ -962,14 +1173,15 @@ function ConductorApp() {
       ),
     }));
     if (isPendingSession) {
-      clearPendingSession();
+      clearPendingSession(sessionId);
     }
 
     void window.electron
       .runAgent({
         runId,
         prompt,
-        sourceFolder: activeProject?.sourceFolder,
+        sourceFolder:
+          runSession.worktree?.workingDirectory ?? activeProject?.sourceFolder,
         provider,
         model: selectedModel?.model,
         accessMode,
@@ -988,6 +1200,7 @@ function ConductorApp() {
           }),
         );
       });
+    return true;
   }
 
   function cancelRun(runId: string) {
@@ -1111,11 +1324,18 @@ function ConductorApp() {
         onProjectChange={selectProject}
         onModelChange={selectModel}
         onAccessModeChange={selectAccessMode}
+        onExecutionModeChange={selectExecutionMode}
         onSend={sendPrompt}
         onCancel={cancelRun}
         onApproval={respondToApproval}
         terminalOpen={terminalOpen}
         onTerminalOpenChange={setTerminalOpen}
+        preparingSession={preparingSessionId === activeSession?.id}
+        preparationError={
+          sessionPreparationError?.sessionId === activeSession?.id
+            ? sessionPreparationError?.message
+            : undefined
+        }
       />
       <FloatingSidebarTrigger />
       <ProjectDialog

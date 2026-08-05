@@ -1,4 +1,8 @@
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import {
+  type ChildProcessWithoutNullStreams,
+  execFile,
+  spawn,
+} from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -8,6 +12,9 @@ import {
   dialog,
   type IpcMainInvokeEvent,
   ipcMain,
+  Menu,
+  type MenuItemConstructorOptions,
+  shell,
   webContents,
 } from "electron";
 import started from "electron-squirrel-startup";
@@ -25,6 +32,7 @@ import {
   type AgentProvider,
   type AgentRunRequest,
   type AgentUsage,
+  type SessionWorktree,
   STANDALONE_TERMINAL_GROUP_ID,
   type TerminalCreateRequest,
   type TerminalEvent,
@@ -32,6 +40,7 @@ import {
   type TerminalTab,
   type TerminalTargetRequest,
   type TerminalWriteRequest,
+  type WorktreeCreateRequest,
 } from "./types";
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
@@ -73,6 +82,189 @@ type TerminalProject = {
 const terminalProjects = new Map<number, Map<string, TerminalProject>>();
 const TERMINAL_OUTPUT_LIMIT = 2_000_000;
 const TERMINAL_ID_PATTERN = /^[a-zA-Z0-9_-]{1,100}$/;
+const WORKTREE_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/;
+const WORKSPACE_FILE_NAME = "workspace.v1.json";
+const WORKSPACE_FILE_SIZE_LIMIT = 100 * 1024 * 1024;
+let workspaceWriteQueue = Promise.resolve();
+
+function workspaceFilePath() {
+  return path.join(app.getPath("userData"), WORKSPACE_FILE_NAME);
+}
+
+function assertWorkspacePayload(serialized: string) {
+  if (
+    typeof serialized !== "string" ||
+    Buffer.byteLength(serialized, "utf8") > WORKSPACE_FILE_SIZE_LIMIT
+  ) {
+    throw new Error("The workspace data is too large to save.");
+  }
+
+  const parsed = JSON.parse(serialized) as {
+    projects?: unknown;
+    recentChats?: unknown;
+  };
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    !Array.isArray(parsed.projects) ||
+    !Array.isArray(parsed.recentChats)
+  ) {
+    throw new Error("The workspace data is invalid.");
+  }
+}
+
+async function readWorkspaceFile() {
+  try {
+    const serialized = await fs.promises.readFile(workspaceFilePath(), "utf8");
+    assertWorkspacePayload(serialized);
+    return serialized;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function writeWorkspaceFile(serialized: string) {
+  assertWorkspacePayload(serialized);
+  const filePath = workspaceFilePath();
+  const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+  try {
+    await fs.promises.writeFile(temporaryPath, serialized, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    await fs.promises.rename(temporaryPath, filePath);
+  } catch (error) {
+    await fs.promises.rm(temporaryPath, { force: true });
+    throw error;
+  }
+}
+
+function runGit(args: string[], cwd: string) {
+  return new Promise<string>((resolve, reject) => {
+    execFile(
+      "git",
+      args,
+      { cwd, encoding: "utf8", maxBuffer: 2_000_000 },
+      (error, stdout, stderr) => {
+        if (error) {
+          const detail = stderr.trim() || error.message;
+          reject(new Error(detail));
+          return;
+        }
+        resolve(stdout.trim());
+      },
+    );
+  });
+}
+
+function worktreeStorageRoot() {
+  return path.join(app.getPath("home"), ".conductor", "worktrees");
+}
+
+function pathIsInside(parent: string, candidate: string) {
+  const relative = path.relative(parent, candidate);
+  return (
+    relative.length > 0 &&
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
+async function createSessionWorktree(
+  request: WorktreeCreateRequest,
+): Promise<SessionWorktree> {
+  if (!request || typeof request !== "object") {
+    throw new Error("Invalid worktree request.");
+  }
+  assertTerminalId(request.sessionId, "session identifier");
+  if (
+    typeof request.sourceFolder !== "string" ||
+    !path.isAbsolute(request.sourceFolder)
+  ) {
+    throw new Error("Choose an absolute project folder.");
+  }
+  if (
+    typeof request.name !== "string" ||
+    !WORKTREE_NAME_PATTERN.test(request.name)
+  ) {
+    throw new Error("Invalid worktree name.");
+  }
+
+  const requestedSourceFolder = path.resolve(request.sourceFolder);
+  if (
+    !fs
+      .statSync(requestedSourceFolder, { throwIfNoEntry: false })
+      ?.isDirectory()
+  ) {
+    throw new Error("The project folder no longer exists.");
+  }
+  const sourceFolder = fs.realpathSync(requestedSourceFolder);
+
+  let repoRoot: string;
+  try {
+    repoRoot = fs.realpathSync(
+      path.resolve(
+        await runGit(["rev-parse", "--show-toplevel"], sourceFolder),
+      ),
+    );
+  } catch {
+    throw new Error("Worktrees require a Git repository.");
+  }
+
+  const relativeSourceFolder = path.relative(repoRoot, sourceFolder);
+  if (
+    relativeSourceFolder === ".." ||
+    relativeSourceFolder.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativeSourceFolder)
+  ) {
+    throw new Error("The project folder is outside its Git repository.");
+  }
+
+  const sessionDirectory = path.join(worktreeStorageRoot(), request.sessionId);
+  const worktreePath = path.join(sessionDirectory, path.basename(repoRoot));
+  if (fs.existsSync(worktreePath)) {
+    throw new Error("A worktree already exists for this session.");
+  }
+
+  const commit = await runGit(["rev-parse", "HEAD"], repoRoot);
+  const currentRef = await runGit(
+    ["rev-parse", "--abbrev-ref", "HEAD"],
+    repoRoot,
+  );
+  const baseRef =
+    currentRef === "HEAD"
+      ? await runGit(["rev-parse", "--short", "HEAD"], repoRoot)
+      : currentRef;
+  const branch = `conductor/${request.name}-${request.sessionId.slice(0, 8)}`;
+
+  fs.mkdirSync(sessionDirectory, { recursive: true });
+  try {
+    await runGit(
+      ["worktree", "add", "-b", branch, worktreePath, commit],
+      repoRoot,
+    );
+  } catch (error) {
+    throw new Error(
+      error instanceof Error
+        ? `Could not create the worktree: ${error.message}`
+        : "Could not create the worktree.",
+    );
+  }
+
+  return {
+    name: request.name,
+    path: worktreePath,
+    workingDirectory: path.join(worktreePath, relativeSourceFolder),
+    branch,
+    baseRef,
+    createdAt: Date.now(),
+  };
+}
 
 function assertTerminalId(
   value: unknown,
@@ -2271,6 +2463,24 @@ ipcMain.handle("dialog:select-source-folder", async (event) => {
   return result.canceled ? null : (result.filePaths[0] ?? null);
 });
 
+ipcMain.handle("worktree:create", (_event, request: WorktreeCreateRequest) =>
+  createSessionWorktree(request),
+);
+
+ipcMain.handle("worktree:reveal", (_event, worktreePath: string) => {
+  if (typeof worktreePath !== "string" || !path.isAbsolute(worktreePath)) {
+    throw new Error("Invalid worktree path.");
+  }
+  const resolvedPath = path.resolve(worktreePath);
+  if (
+    !pathIsInside(worktreeStorageRoot(), resolvedPath) ||
+    !fs.statSync(resolvedPath, { throwIfNoEntry: false })?.isDirectory()
+  ) {
+    throw new Error("The managed worktree no longer exists.");
+  }
+  shell.showItemInFolder(resolvedPath);
+});
+
 ipcMain.handle("agent:models", () => listAvailableModels());
 
 ipcMain.handle("agent:gemini-usage", () => {
@@ -2487,6 +2697,68 @@ ipcMain.handle("terminal:close", (event, request: TerminalTargetRequest) => {
   }
 });
 
+ipcMain.handle("workspace:load", () => readWorkspaceFile());
+
+ipcMain.handle("workspace:save", (_event, serialized: string) => {
+  workspaceWriteQueue = workspaceWriteQueue
+    .catch(() => undefined)
+    .then(() => writeWorkspaceFile(serialized));
+  return workspaceWriteQueue;
+});
+
+ipcMain.handle("devtools:open", (event) => {
+  event.sender.openDevTools({ mode: "detach", activate: true });
+});
+
+function installDeveloperTools(mainWindow: BrowserWindow) {
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown") {
+      return;
+    }
+    const isInspectShortcut =
+      input.key.toLowerCase() === "i" &&
+      (process.platform === "darwin"
+        ? input.meta && input.alt
+        : input.control && input.shift);
+    if (input.key === "F12" || isInspectShortcut) {
+      event.preventDefault();
+      mainWindow.webContents.toggleDevTools();
+    }
+  });
+
+  mainWindow.webContents.on("context-menu", (_event, params) => {
+    const template: MenuItemConstructorOptions[] = [];
+    if (params.isEditable) {
+      template.push(
+        { role: "undo" },
+        { role: "redo" },
+        { type: "separator" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        { role: "selectAll" },
+        { type: "separator" },
+      );
+    } else if (params.selectionText) {
+      template.push({ role: "copy" }, { type: "separator" });
+    }
+    template.push({
+      label: "Inspect Element",
+      click: () => {
+        const inspect = () =>
+          mainWindow.webContents.inspectElement(params.x, params.y);
+        if (mainWindow.webContents.isDevToolsOpened()) {
+          inspect();
+          return;
+        }
+        mainWindow.webContents.once("devtools-opened", inspect);
+        mainWindow.webContents.openDevTools({ mode: "detach", activate: true });
+      },
+    });
+    Menu.buildFromTemplate(template).popup({ window: mainWindow });
+  });
+}
+
 function createWindow() {
   const isMac = process.platform === "darwin";
   const mainWindow = new BrowserWindow({
@@ -2511,8 +2783,11 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      devTools: true,
     },
   });
+
+  installDeveloperTools(mainWindow);
 
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     void mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
@@ -2546,24 +2821,42 @@ function createWindow() {
   });
 }
 
-// This method will be called when Electron has finished
-// initialization and is ready to create browser windows.
-// Some APIs can only be used after this event occurs.
-void app.whenReady().then(createWindow);
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
-});
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    const mainWindow = BrowserWindow.getAllWindows()[0];
+    if (!mainWindow) {
+      return;
+    }
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+    }
+    mainWindow.show();
+    mainWindow.focus();
+  });
 
-app.on("activate", () => {
-  // On OS X it's common to re-create a window in the app when the
-  // dock icon is clicked and there are no other windows open.
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
-  }
-});
+  // This method will be called when Electron has finished
+  // initialization and is ready to create browser windows.
+  // Some APIs can only be used after this event occurs.
+  void app.whenReady().then(createWindow);
+
+  // Quit when all windows are closed, except on macOS. There, it's common
+  // for applications and their menu bar to stay active until the user quits
+  // explicitly with Cmd + Q.
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") {
+      app.quit();
+    }
+  });
+
+  app.on("activate", () => {
+    // On OS X it's common to re-create a window in the app when the
+    // dock icon is clicked and there are no other windows open.
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+}

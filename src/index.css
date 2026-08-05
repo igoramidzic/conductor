@@ -364,9 +364,9 @@
 
 .session-title-fade-right {
   right: 0;
-  width: 1.25rem;
+  width: calc(2.75rem + 3px);
   background-color: var(--session-title-fade-color, var(--sidebar));
-  mask-image: linear-gradient(to left, black 35%, transparent);
+  mask-image: linear-gradient(to left, black 42%, transparent);
   opacity: 0;
 }
 
@@ -494,8 +494,9 @@
 }
 
 [data-session-row="true"] > [data-slot="sidebar-menu-button"][data-active] {
-  background-color: transparent;
-  color: var(--sidebar-foreground);
+  --session-title-fade-color: var(--sidebar-accent);
+  background-color: var(--sidebar-accent);
+  color: var(--sidebar-accent-foreground);
   font-weight: 400;
 }
 
@@ -506,6 +507,8 @@
   color: var(--sidebar-accent-foreground);
 }
 
+[data-session-row="true"]:has(> [data-session-worktree="true"])
+  .session-title-fade-right,
 [data-session-row="true"]:hover .session-title-fade-right,
 [data-session-row="true"]:focus-within .session-title-fade-right {
   width: calc(2.75rem + 3px);
@@ -518,8 +521,14 @@
   color: color-mix(in srgb, var(--sidebar-foreground) 45%, transparent);
 }
 
+[data-session-row="true"]:hover > [data-session-worktree="true"],
+[data-session-row="true"]:has(> [data-session-archive="true"]:focus-visible)
+  > [data-session-worktree="true"] {
+  opacity: 0;
+}
+
 [data-session-row="true"]:hover [data-session-archive="true"],
-[data-session-row="true"]:focus-within [data-session-archive="true"] {
+[data-session-row="true"] > [data-session-archive="true"]:focus-visible {
   background-color: transparent;
   color: color-mix(in srgb, var(--sidebar-foreground) 45%, transparent);
   opacity: 1;
@@ -533,9 +542,6 @@
 
 [data-session-row="true"]:hover
   .session-title[data-overflow="true"]
-  .session-title-track,
-[data-session-row="true"]:focus-within
-  .session-title[data-overflow="true"]
   .session-title-track {
   animation: session-title-pan var(--session-title-duration)
     cubic-bezier(0.12, 0, 0.88, 1) 140ms infinite;
@@ -543,9 +549,6 @@
 }
 
 [data-session-row="true"]:hover
-  .session-title[data-overflow="true"]
-  .session-title-fade-left,
-[data-session-row="true"]:focus-within
   .session-title[data-overflow="true"]
   .session-title-fade-left {
   animation: session-title-left-fade var(--session-title-duration)
@@ -772,13 +775,7 @@
   [data-session-row="true"]:hover
     .session-title[data-overflow="true"]
     .session-title-track,
-  [data-session-row="true"]:focus-within
-    .session-title[data-overflow="true"]
-    .session-title-track,
   [data-session-row="true"]:hover
-    .session-title[data-overflow="true"]
-    .session-title-fade-left,
-  [data-session-row="true"]:focus-within
     .session-title[data-overflow="true"]
     .session-title-fade-left {
     animation: none;

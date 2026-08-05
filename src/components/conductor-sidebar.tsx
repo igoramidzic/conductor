@@ -1,4 +1,11 @@
-import { Archive, ChevronRight, Folder, Plus, Settings2 } from "lucide-react";
+import {
+  Archive,
+  ChevronRight,
+  Folder,
+  GitFork,
+  Plus,
+  Settings2,
+} from "lucide-react";
 import {
   type CSSProperties,
   useCallback,
@@ -76,6 +83,7 @@ function SessionTitle({
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLSpanElement>(null);
+  const rightFadeRef = useRef<HTMLSpanElement>(null);
   const [metrics, setMetrics] = useState<SessionTitleMetrics>({
     overflows: false,
     shift: 0,
@@ -85,12 +93,16 @@ function SessionTitle({
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     const text = textRef.current;
-    if (!viewport || !text) {
+    const rightFade = rightFadeRef.current;
+    if (!viewport || !text || !rightFade) {
       return;
     }
 
     const measure = () => {
-      const visibleWidth = viewport.clientWidth - text.offsetLeft;
+      const visibleWidth = Math.max(
+        0,
+        viewport.clientWidth - text.offsetLeft - rightFade.offsetWidth,
+      );
       const overflow = Math.max(0, text.scrollWidth - visibleWidth);
       const shift =
         overflow > 1 ? text.scrollWidth + SESSION_TITLE_LOOP_GAP : 0;
@@ -115,6 +127,7 @@ function SessionTitle({
     const observer = new ResizeObserver(measure);
     observer.observe(viewport);
     observer.observe(text);
+    observer.observe(rightFade);
     return () => observer.disconnect();
   }, []);
 
@@ -148,6 +161,7 @@ function SessionTitle({
         aria-hidden="true"
       />
       <span
+        ref={rightFadeRef}
         className="session-title-fade session-title-fade-right"
         aria-hidden="true"
       />
@@ -177,6 +191,16 @@ function SessionRow({
       >
         <SessionTitle title={session.title} placement={placement} />
       </SidebarMenuButton>
+      {session.worktree ? (
+        <span
+          data-session-worktree="true"
+          className="pointer-events-none absolute top-1.5 right-1 z-10 flex size-5 items-center justify-center text-primary/75 transition-opacity"
+          role="img"
+          aria-label={`Worktree: ${session.worktree.name}`}
+        >
+          <GitFork className="size-3.5" aria-hidden="true" />
+        </span>
+      ) : null}
       <SidebarMenuAction
         data-session-archive="true"
         className="right-1 z-20 size-5 opacity-0"
