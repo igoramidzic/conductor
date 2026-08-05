@@ -1,10 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "@/components/ui/hover-card";
+import { PopoverContent } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import type { GeminiAccountUsage, GeminiQuotaModelUsage } from "@/types";
@@ -13,6 +9,11 @@ type UsageMenuItemProps = {
   usage: GeminiAccountUsage | null;
   loading: boolean;
   error: string | null;
+  onOpen: () => void;
+};
+
+type UsagePopoverContentProps = Omit<UsageMenuItemProps, "onOpen"> & {
+  anchor: React.RefObject<Element | null>;
   onRefresh: () => Promise<void>;
 };
 
@@ -189,58 +190,64 @@ export function UsageMenuItem({
   usage,
   loading,
   error,
-  onRefresh,
+  onOpen,
 }: UsageMenuItemProps) {
   return (
-    <HoverCard>
-      <HoverCardTrigger
-        delay={150}
-        closeDelay={500}
-        render={<DropdownMenuItem closeOnClick={false} />}
-      >
-        <span>Usage</span>
-        <span className="min-w-0 flex-1 text-right text-xs tabular-nums text-muted-foreground">
-          {usageSummary(usage, loading, error)}
-        </span>
-      </HoverCardTrigger>
-      <HoverCardContent
-        side="right"
-        align="end"
-        sideOffset={8}
-        className="w-80 p-3"
-      >
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-medium">Gemini usage</p>
-            <p className="text-[11px] text-muted-foreground">
-              Updated automatically
-            </p>
-          </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="xs"
-            disabled={loading}
-            onClick={() => void onRefresh()}
-          >
-            {loading ? "Refreshing…" : "Refresh"}
-          </Button>
-        </div>
+    <DropdownMenuItem closeOnClick={false} onClick={onOpen}>
+      <span>Usage</span>
+      <span className="min-w-0 flex-1 text-right text-xs tabular-nums text-muted-foreground">
+        {usageSummary(usage, loading, error)}
+      </span>
+    </DropdownMenuItem>
+  );
+}
 
-        {loading && !usage ? <UsageLoadingState /> : null}
-
-        {error && !usage ? (
-          <p className="rounded-md bg-destructive/8 px-2.5 py-2 text-xs leading-relaxed text-destructive">
-            {error}
+export function UsagePopoverContent({
+  usage,
+  loading,
+  error,
+  anchor,
+  onRefresh,
+}: UsagePopoverContentProps) {
+  return (
+    <PopoverContent
+      anchor={anchor}
+      side="right"
+      align="end"
+      sideOffset={8}
+      className="w-80 p-3"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium">Gemini usage</p>
+          <p className="text-[11px] text-muted-foreground">
+            Updated automatically
           </p>
-        ) : null}
+        </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          disabled={loading}
+          onClick={() => void onRefresh()}
+        >
+          {loading ? "Refreshing…" : "Refresh"}
+        </Button>
+      </div>
 
-        {usage ? (
-          <div className={cn(loading && "opacity-65")}>
-            <UsageDetails usage={usage} />
-          </div>
-        ) : null}
-      </HoverCardContent>
-    </HoverCard>
+      {loading && !usage ? <UsageLoadingState /> : null}
+
+      {error && !usage ? (
+        <p className="rounded-md bg-destructive/8 px-2.5 py-2 text-xs leading-relaxed text-destructive">
+          {error}
+        </p>
+      ) : null}
+
+      {usage ? (
+        <div className={cn(loading && "opacity-65")}>
+          <UsageDetails usage={usage} />
+        </div>
+      ) : null}
+    </PopoverContent>
   );
 }

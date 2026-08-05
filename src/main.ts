@@ -14,6 +14,7 @@ import started from "electron-squirrel-startup";
 import * as pty from "node-pty";
 
 import { getAgentAccessArgs, resolveAgentAccessMode } from "./agent-access";
+import { readRecordedGeminiUsage } from "./gemini-context-usage";
 import { getGeminiAccountUsage } from "./gemini-usage";
 import {
   type AgentActivityKind,
@@ -612,6 +613,7 @@ function assertApprovalResponse(
 type ParserState = {
   response: string;
   finished: boolean;
+  conversationId?: string;
   lastError?: string;
   model?: string;
   usage?: AgentUsage;
@@ -881,6 +883,7 @@ function parseGeminiLine(
   if (payload.type === "init") {
     const conversationId = payload.session_id;
     if (typeof conversationId === "string") {
+      state.conversationId = conversationId;
       sendConversation(event, request, conversationId);
     }
     return;
@@ -972,16 +975,16 @@ function parseGeminiLine(
       "cachedInputTokens",
       "cached_input_tokens",
     );
+    if (inputTokens === undefined) {
+      return;
+    }
     // Gemini reports the current model call here. Replacing the previous
     // values lets an automatic context compaction reduce the displayed usage.
     sendUsage(event, request, state, {
       inputTokens,
       outputTokens,
       cachedInputTokens,
-      usedTokens:
-        inputTokens !== undefined || outputTokens !== undefined
-          ? (inputTokens ?? 0) + (outputTokens ?? 0)
-          : undefined,
+      usedTokens: inputTokens,
       contextWindow: GEMINI_CONTEXT_WINDOW,
     });
     return;
@@ -1021,6 +1024,20 @@ function parseGeminiLine(
             : (state.lastError ?? "Gemini stopped before finishing."),
       });
       return;
+    }
+    if (!state.usage && state.conversationId) {
+      // Stable Gemini CLI releases only expose cumulative session totals in
+      // result.stats. The latest recorded model message has the current prompt
+      // size, including the lower value after an automatic compaction.
+      const recordedUsage = readRecordedGeminiUsage(
+        process.env.GEMINI_CLI_HOME ?? app.getPath("home"),
+        request.sourceFolder ?? app.getPath("home"),
+        state.conversationId,
+        GEMINI_CONTEXT_WINDOW,
+      );
+      if (recordedUsage) {
+        sendUsage(event, request, state, recordedUsage);
+      }
     }
     sendComplete(event, request, state);
     return;

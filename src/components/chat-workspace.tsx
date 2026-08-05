@@ -1096,13 +1096,15 @@ function ContextUsageIndicator({
   contextWindow?: number;
 }) {
   const maxTokens = usage?.contextWindow ?? contextWindow;
-  const usedTokens = usage?.usedTokens ?? 0;
-  const ratio = maxTokens ? usedTokens / maxTokens : 0;
+  const usedTokens = usage?.usedTokens;
+  const ratio =
+    maxTokens && usedTokens !== undefined ? usedTokens / maxTokens : 0;
   const percentage = Math.min(100, Math.round(Math.max(0, ratio) * 100));
   const fillPercentage = Math.min(100, Math.max(0, ratio * 100));
-  const summary = maxTokens
-    ? `${compactTokenFormatter.format(usedTokens)} of ${compactTokenFormatter.format(maxTokens)} tokens used`
-    : "Context usage unavailable";
+  const summary =
+    maxTokens && usedTokens !== undefined
+      ? `${compactTokenFormatter.format(usedTokens)} of ${compactTokenFormatter.format(maxTokens)} tokens used`
+      : "Context usage unavailable";
 
   return (
     <HoverCard>
@@ -1119,7 +1121,7 @@ function ContextUsageIndicator({
           />
         }
       >
-        {maxTokens && usedTokens > 0 ? (
+        {maxTokens && usedTokens !== undefined ? (
           <span
             className="size-3.5 rounded-full ring-1 ring-foreground/15 ring-inset"
             style={{
@@ -1141,7 +1143,9 @@ function ContextUsageIndicator({
           <div>
             <p className="text-xs font-medium">Context usage</p>
             <p className="mt-1 text-lg leading-none font-semibold tracking-[-0.025em] tabular-nums">
-              {compactTokenFormatter.format(usedTokens)}
+              {usedTokens === undefined
+                ? "—"
+                : compactTokenFormatter.format(usedTokens)}
               {maxTokens ? (
                 <span className="font-normal text-muted-foreground">
                   {" "}
@@ -1151,7 +1155,7 @@ function ContextUsageIndicator({
             </p>
           </div>
           <span className="rounded-md bg-muted px-1.5 py-1 text-[10px] leading-none font-medium text-muted-foreground tabular-nums">
-            {maxTokens ? `${percentage}%` : "—"}
+            {maxTokens && usedTokens !== undefined ? `${percentage}%` : "—"}
           </span>
         </div>
 
