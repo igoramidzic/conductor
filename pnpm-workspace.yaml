@@ -12,6 +12,7 @@ allowBuilds:
   electron: true
   electron-winstaller: true
   esbuild: true
+  node-pty: true
 
 # Forge's current fuses plugin declares a ^1 peer range. Keep the newest
 # compatible major until Forge updates that contract.

@@ -3,13 +3,32 @@ import { MakerDeb } from "@electron-forge/maker-deb";
 import { MakerRpm } from "@electron-forge/maker-rpm";
 import { MakerSquirrel } from "@electron-forge/maker-squirrel";
 import { MakerZIP } from "@electron-forge/maker-zip";
+import { AutoUnpackNativesPlugin } from "@electron-forge/plugin-auto-unpack-natives";
 import { FusesPlugin } from "@electron-forge/plugin-fuses";
 import { VitePlugin } from "@electron-forge/plugin-vite";
 import type { ForgeConfig } from "@electron-forge/shared-types";
 
 const config: ForgeConfig = {
   packagerConfig: {
-    asar: true,
+    asar: {
+      // node-pty resolves both the native binary and spawn helper outside ASAR.
+      unpack: "**/node_modules/node-pty/**",
+    },
+    // Vite bundles the rest of the dependency graph. Keep node-pty available
+    // at runtime because its platform binary cannot be bundled into main.js.
+    ignore: (file) => {
+      if (!file) {
+        return false;
+      }
+      if (file === "/node_modules") {
+        return false;
+      }
+      return !(
+        file.startsWith("/.vite") ||
+        file.startsWith("/node_modules/node-pty") ||
+        file.startsWith("/node_modules/node-addon-api")
+      );
+    },
   },
   rebuildConfig: {},
   makers: [
@@ -42,6 +61,7 @@ const config: ForgeConfig = {
         },
       ],
     }),
+    new AutoUnpackNativesPlugin({}),
     // Fuses are used to enable/disable various Electron functionality
     // at package time, before code signing the application
     new FusesPlugin({
