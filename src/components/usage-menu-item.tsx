@@ -187,6 +187,7 @@ function UsageDetails({ usage }: { usage: GeminiAccountUsage }) {
 export function UsageMenuItem({ usage, loading, error }: UsageMenuItemProps) {
   const [hoverCardOpen, setHoverCardOpen] = useState(false);
   const closeTimerRef = useRef<number | null>(null);
+  const pointerInsideRef = useRef(false);
 
   const clearCloseTimer = useCallback(() => {
     if (closeTimerRef.current !== null) {
@@ -202,6 +203,16 @@ export function UsageMenuItem({ usage, loading, error }: UsageMenuItemProps) {
       closeTimerRef.current = null;
     }, HOVER_CARD_CLOSE_DELAY_MS);
   }, [clearCloseTimer]);
+
+  const handleMouseEnter = useCallback(() => {
+    pointerInsideRef.current = true;
+    clearCloseTimer();
+  }, [clearCloseTimer]);
+
+  const handleMouseLeave = useCallback(() => {
+    pointerInsideRef.current = false;
+    scheduleClose();
+  }, [scheduleClose]);
 
   useEffect(() => clearCloseTimer, [clearCloseTimer]);
 
@@ -220,7 +231,9 @@ export function UsageMenuItem({ usage, loading, error }: UsageMenuItemProps) {
           eventDetails.reason === "trigger-focus"
         ) {
           eventDetails.cancel();
-          scheduleClose();
+          if (!pointerInsideRef.current) {
+            scheduleClose();
+          }
           return;
         }
 
@@ -231,8 +244,8 @@ export function UsageMenuItem({ usage, loading, error }: UsageMenuItemProps) {
       <HoverCardTrigger
         delay={250}
         closeDelay={HOVER_CARD_CLOSE_DELAY_MS}
-        onMouseEnter={clearCloseTimer}
-        onMouseLeave={scheduleClose}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
         render={<DropdownMenuItem closeOnClick={false} />}
       >
         <span>Usage</span>
@@ -246,8 +259,8 @@ export function UsageMenuItem({ usage, loading, error }: UsageMenuItemProps) {
         align="center"
         sideOffset={8}
         className="w-80 p-3"
-        onMouseEnter={clearCloseTimer}
-        onMouseLeave={scheduleClose}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
       >
         <div>
           <p className="text-sm font-medium">Gemini usage</p>
