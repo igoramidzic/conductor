@@ -273,9 +273,20 @@
   user-select: text;
 }
 
-.session-title-text {
-  max-width: none;
+.session-title-track {
+  display: inline-flex;
+  width: max-content;
   transform: translateX(0);
+}
+
+.session-title-text {
+  flex: none;
+  max-width: none;
+  white-space: nowrap;
+}
+
+.session-title-text + .session-title-text {
+  margin-left: 52px;
 }
 
 .session-title-fade {
@@ -312,6 +323,43 @@
   --session-title-fade-color: var(--sidebar);
 }
 
+[data-sidebar-action-row="true"]:where(
+    :has(> [data-slot="sidebar-menu-action"]:hover)
+  )
+  > [data-slot="sidebar-menu-button"],
+[data-sidebar-action-row="true"]:where(
+    :has(> [data-slot="sidebar-menu-action"]:focus-visible)
+  )
+  > [data-slot="sidebar-menu-button"] {
+  background-color: var(--sidebar-accent);
+  color: var(--sidebar-accent-foreground);
+}
+
+[data-sidebar-add-action="true"] {
+  color: color-mix(in srgb, var(--sidebar-foreground) 45%, transparent);
+  visibility: hidden;
+}
+
+[data-sidebar-action-row="true"]:has(> [data-slot="sidebar-menu-button"]:hover)
+  > [data-sidebar-add-action="true"],
+[data-sidebar-action-row="true"]:has(
+    > [data-slot="sidebar-menu-button"]:focus-visible
+  )
+  > [data-sidebar-add-action="true"],
+[data-sidebar-action-row="true"]:has(> [data-sidebar-add-action="true"]:hover)
+  > [data-sidebar-add-action="true"],
+[data-sidebar-action-row="true"]:has(
+    > [data-sidebar-add-action="true"]:focus-visible
+  )
+  > [data-sidebar-add-action="true"] {
+  visibility: visible;
+}
+
+[data-sidebar-add-action="true"]:hover,
+[data-sidebar-add-action="true"]:focus-visible {
+  color: var(--sidebar-accent-foreground);
+}
+
 [data-session-row="true"] > [data-slot="sidebar-menu-button"][data-active] {
   background-color: transparent;
   color: var(--sidebar-foreground);
@@ -327,7 +375,7 @@
 
 [data-session-row="true"]:hover .session-title-fade-right,
 [data-session-row="true"]:focus-within .session-title-fade-right {
-  width: 2.75rem;
+  width: calc(2.75rem + 3px);
   mask-image: linear-gradient(to left, black 42%, transparent);
   opacity: 1;
 }
@@ -352,12 +400,12 @@
 
 [data-session-row="true"]:hover
   .session-title[data-overflow="true"]
-  .session-title-text,
+  .session-title-track,
 [data-session-row="true"]:focus-within
   .session-title[data-overflow="true"]
-  .session-title-text {
+  .session-title-track {
   animation: session-title-pan var(--session-title-duration)
-    cubic-bezier(0.12, 0, 0.88, 1) 140ms infinite alternate;
+    cubic-bezier(0.12, 0, 0.88, 1) 140ms infinite;
   will-change: transform;
 }
 
@@ -368,7 +416,18 @@
   .session-title[data-overflow="true"]
   .session-title-fade-left {
   animation: session-title-left-fade var(--session-title-duration)
-    cubic-bezier(0.12, 0, 0.88, 1) 140ms infinite alternate;
+    cubic-bezier(0.12, 0, 0.88, 1) 140ms infinite;
+}
+
+[data-session-row="true"]:has(> [data-session-archive="true"]:hover)
+  .session-title-track,
+[data-session-row="true"]:has(> [data-session-archive="true"]:focus-visible)
+  .session-title-track,
+[data-session-row="true"]:has(> [data-session-archive="true"]:hover)
+  .session-title-fade-left,
+[data-session-row="true"]:has(> [data-session-archive="true"]:focus-visible)
+  .session-title-fade-left {
+  animation: none;
 }
 
 .agent-markdown {
@@ -524,11 +583,11 @@
 
 @keyframes session-title-pan {
   0%,
-  5% {
+  8% {
     transform: translateX(0);
   }
 
-  95%,
+  92%,
   100% {
     transform: translateX(calc(-1 * var(--session-title-shift)));
   }
@@ -536,13 +595,18 @@
 
 @keyframes session-title-left-fade {
   0%,
-  5% {
+  8% {
     opacity: 0;
   }
 
-  20%,
-  100% {
+  18%,
+  88% {
     opacity: 1;
+  }
+
+  92%,
+  100% {
+    opacity: 0;
   }
 }
 
@@ -565,10 +629,10 @@
 
   [data-session-row="true"]:hover
     .session-title[data-overflow="true"]
-    .session-title-text,
+    .session-title-track,
   [data-session-row="true"]:focus-within
     .session-title[data-overflow="true"]
-    .session-title-text,
+    .session-title-track,
   [data-session-row="true"]:hover
     .session-title[data-overflow="true"]
     .session-title-fade-left,

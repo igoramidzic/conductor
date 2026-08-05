@@ -98,7 +98,16 @@ function loadWorkspace(): WorkspaceState {
                     ? [message.content]
                     : [],
                 activities: Array.isArray(message.activities)
-                  ? message.activities
+                  ? message.activities.filter(
+                      (activity) =>
+                        !(
+                          (migrateProvider(legacyProvider) === "codex" ||
+                            migrateProvider(legacyConversationProvider) ===
+                              "codex") &&
+                          activity.id === "item_0" &&
+                          activity.label.toLowerCase() === "error"
+                        ),
+                    )
                   : [],
                 status: wasInterrupted ? "error" : message.status,
                 runId: undefined,

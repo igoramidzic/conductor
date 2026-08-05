@@ -843,7 +843,7 @@ function parseClaudeLine(
   }
 }
 
-function codexActivityLabel(item: Record<string, unknown>) {
+function codexActivityLabel(item: Record<string, unknown>): string | null {
   if (item.type === "command_execution" || item.type === "commandExecution") {
     return "Running command";
   }
@@ -855,6 +855,18 @@ function codexActivityLabel(item: Record<string, unknown>) {
   }
   if (item.type === "mcp_tool_call" || item.type === "mcpToolCall") {
     return typeof item.tool === "string" ? item.tool : "Using tool";
+  }
+  if (
+    [
+      "reasoning",
+      "agent_message",
+      "agentMessage",
+      "user_message",
+      "userMessage",
+      "error",
+    ].includes(String(item.type))
+  ) {
+    return null;
   }
   return typeof item.type === "string"
     ? item.type.replace(/[_-]+/g, " ")
@@ -898,12 +910,13 @@ function parseCodexLine(
       return;
     }
 
-    if (item.type !== "reasoning") {
+    const activityLabel = codexActivityLabel(item);
+    if (activityLabel) {
       sendAgentEvent(event, {
         runId: request.runId,
         type: "status",
         activityId: String(item.id ?? item.type ?? "working"),
-        label: codexActivityLabel(item),
+        label: activityLabel,
         stepType: typeof item.type === "string" ? item.type : "working",
         state: payload.type === "item.completed" ? "COMPLETED" : "RUNNING",
       });
@@ -1164,16 +1177,13 @@ function startCodexApprovalRun(
       if (typeof item.id === "string") {
         items.set(item.id, item);
       }
-      if (
-        item.type !== "reasoning" &&
-        item.type !== "agentMessage" &&
-        item.type !== "userMessage"
-      ) {
+      const activityLabel = codexActivityLabel(item);
+      if (activityLabel) {
         sendAgentEvent(event, {
           runId: request.runId,
           type: "status",
           activityId: String(item.id ?? item.type ?? "working"),
-          label: codexActivityLabel(item),
+          label: activityLabel,
           stepType: typeof item.type === "string" ? item.type : "working",
           state: method === "item/completed" ? "COMPLETED" : "RUNNING",
         });

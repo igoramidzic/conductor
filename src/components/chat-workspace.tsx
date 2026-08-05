@@ -126,11 +126,6 @@ function WorkspaceHeader({
           <p className="truncate text-[13px] leading-none font-medium tracking-[-0.01em]">
             {session?.title ?? project?.name ?? ""}
           </p>
-          {project ? (
-            <p className="mt-1 truncate font-mono text-[9px] leading-none text-muted-foreground/70">
-              {project.sourceFolder}
-            </p>
-          ) : null}
         </div>
       </div>
       <div className="app-no-drag relative z-10 flex shrink-0 items-center pr-2.5">
@@ -192,7 +187,10 @@ function MarkdownResponse({ children }: { children: string }) {
 }
 
 function AgentResponse({ message }: { message: ChatMessage }) {
-  const activities = message.activities ?? [];
+  const activities = (message.activities ?? []).filter(
+    (activity) =>
+      !(activity.id === "item_0" && activity.label.toLowerCase() === "error"),
+  );
   const hasRunningActivity = activities.some(
     (activity) => activity.status === "running",
   );

@@ -60,6 +60,8 @@ type SessionTitleMetrics = {
   duration: number;
 };
 
+const SESSION_TITLE_LOOP_GAP = 52;
+
 function SessionTitle({ title }: { title: string }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLSpanElement>(null);
@@ -79,7 +81,8 @@ function SessionTitle({ title }: { title: string }) {
     const measure = () => {
       const visibleWidth = viewport.clientWidth - text.offsetLeft;
       const overflow = Math.max(0, text.scrollWidth - visibleWidth);
-      const shift = overflow > 1 ? overflow + 52 : 0;
+      const shift =
+        overflow > 1 ? text.scrollWidth + SESSION_TITLE_LOOP_GAP : 0;
       const nextMetrics = {
         overflows: overflow > 1,
         shift,
@@ -116,11 +119,15 @@ function SessionTitle({ title }: { title: string }) {
         } as CSSProperties
       }
     >
-      <span
-        ref={textRef}
-        className="session-title-text inline-block whitespace-nowrap"
-      >
-        {title}
+      <span className="session-title-track">
+        <span ref={textRef} className="session-title-text">
+          {title}
+        </span>
+        {metrics.overflows ? (
+          <span className="session-title-text" aria-hidden="true">
+            {title}
+          </span>
+        ) : null}
       </span>
       <span
         className="session-title-fade session-title-fade-left"
@@ -156,7 +163,7 @@ function SessionRow({
       </SidebarMenuButton>
       <SidebarMenuAction
         data-session-archive="true"
-        className="right-1 z-20 size-5 opacity-0 transition-colors"
+        className="right-1 z-20 size-5 opacity-0"
         aria-label={`Archive ${session.title}`}
         onClick={(event) => {
           event.stopPropagation();
@@ -184,7 +191,7 @@ function SidebarSectionRow({
 }) {
   return (
     <SidebarMenu>
-      <SidebarMenuItem>
+      <SidebarMenuItem data-sidebar-action-row="true">
         <SidebarMenuButton
           className="h-8 text-[13px] font-medium text-sidebar-foreground/70"
           aria-expanded={expanded}
@@ -193,6 +200,7 @@ function SidebarSectionRow({
           <span>{label}</span>
         </SidebarMenuButton>
         <SidebarMenuAction
+          data-sidebar-add-action="true"
           showOnHover
           aria-label={actionLabel}
           onClick={(event) => {
@@ -260,7 +268,10 @@ export function ConductorSidebar({
                   (session) => !session.archived && session.messages.length > 0,
                 );
                 return (
-                  <SidebarMenuItem key={project.id}>
+                  <SidebarMenuItem
+                    key={project.id}
+                    data-sidebar-action-row="true"
+                  >
                     <SidebarMenuButton
                       className={cn(
                         "h-8 pr-8 text-[13px]",
@@ -276,6 +287,7 @@ export function ConductorSidebar({
                       <span>{project.name}</span>
                     </SidebarMenuButton>
                     <SidebarMenuAction
+                      data-sidebar-add-action="true"
                       showOnHover
                       aria-label={`New session in ${project.name}`}
                       onClick={(event) => {
@@ -286,8 +298,15 @@ export function ConductorSidebar({
                       <Plus aria-hidden="true" />
                     </SidebarMenuAction>
 
-                    {project.expanded && visibleSessions.length > 0 ? (
+                    {project.expanded ? (
                       <SidebarMenu className="mt-0.5 gap-0.5">
+                        {visibleSessions.length === 0 ? (
+                          <SidebarMenuItem>
+                            <div className="flex h-8 items-center pl-[30px] text-xs text-sidebar-foreground/45">
+                              No chats
+                            </div>
+                          </SidebarMenuItem>
+                        ) : null}
                         {visibleSessions.map((session) => {
                           const sessionIsActive =
                             session.id === activeSessionId;
