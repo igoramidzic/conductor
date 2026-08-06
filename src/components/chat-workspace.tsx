@@ -6,6 +6,7 @@ import {
   ChartPie,
   Check,
   ChevronDown,
+  ChevronRight,
   Copy,
   FilePenLine,
   Folder,
@@ -24,8 +25,10 @@ import {
   SquareTerminal,
   Wrench,
   X,
+  Zap,
 } from "lucide-react";
 import {
+  type ComponentPropsWithRef,
   type KeyboardEvent,
   type ReactNode,
   useEffect,
@@ -50,13 +53,10 @@ import {
 } from "@/components/ui/collapsible";
 import {
   Combobox,
-  ComboboxCollection,
   ComboboxContent,
   ComboboxEmpty,
-  ComboboxGroup,
   ComboboxInput,
   ComboboxItem,
-  ComboboxLabel,
   ComboboxList,
   ComboboxSeparator,
   ComboboxTrigger,
@@ -88,8 +88,15 @@ import {
   MessageScrollerProvider,
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
 import { SidebarInset, useSidebar } from "@/components/ui/sidebar";
+import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type {
@@ -98,7 +105,10 @@ import type {
   AgentApprovalDecision,
   AgentApprovalRequest,
   AgentModel,
+  AgentModelSelection,
   AgentProvider,
+  AgentReasoningEffort,
+  AgentSpeed,
   AgentUsage,
   ChatMessage,
   ChatSession,
@@ -117,7 +127,7 @@ type ChatWorkspaceProps = {
   onCreateProject: () => void;
   onCreateSession: (projectId: string | null) => void;
   onProjectChange: (projectId: string | null) => void;
-  onModelChange: (model: AgentModel) => void;
+  onModelChange: (selection: AgentModelSelection) => void;
   onAccessModeChange: (mode: AgentAccessMode) => void;
   onExecutionModeChange: (mode: SessionExecutionMode) => void;
   onSend: (prompt: string) => Promise<boolean>;
@@ -765,19 +775,84 @@ function groupModels(models: AgentModel[]): AgentModelGroup[] {
   return [...groups.entries()].map(([value, items]) => ({ value, items }));
 }
 
+const reasoningEffortLabels: Record<AgentReasoningEffort, string> = {
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra High",
+  max: "Maximum",
+  ultra: "Ultra",
+};
+
+const speedLabels: Record<AgentSpeed, string> = {
+  standard: "Standard",
+  fast: "Fast",
+};
+
+function compactModelLabel(model: AgentModel, includeProvider = false) {
+  let label = model.label;
+  if (model.provider === "codex") {
+    label = label.replace(/^GPT-/i, "").replaceAll("-", " ");
+  } else {
+    label = label.replace(/\s*\(latest\)$/i, "");
+  }
+  return includeProvider && model.provider !== "codex"
+    ? `${model.group} ${label}`
+    : label;
+}
+
+function ModelSettingTrigger({
+  label,
+  value,
+  disabled = false,
+  className,
+  ...props
+}: {
+  label: string;
+  value: string;
+  disabled?: boolean;
+} & ComponentPropsWithRef<"button">) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      {...props}
+      disabled={disabled}
+      className={cn("group/model-setting w-full justify-start", className)}
+    >
+      <span className="font-medium text-foreground">{label}</span>
+      <span className="ml-auto max-w-40 truncate text-muted-foreground group-hover/model-setting:text-foreground group-focus-visible/model-setting:text-foreground">
+        {value}
+      </span>
+      <ChevronRight
+        className="shrink-0 text-muted-foreground"
+        aria-hidden="true"
+      />
+    </Button>
+  );
+}
+
 function ModelPicker({
   provider,
   model,
+  reasoningEffort,
+  speed,
   models,
   loading,
   onChange,
 }: {
   provider?: AgentProvider;
   model?: string;
+  reasoningEffort?: AgentReasoningEffort;
+  speed?: AgentSpeed;
   models: AgentModel[];
   loading: boolean;
-  onChange: (model: AgentModel) => void;
+  onChange: (selection: AgentModelSelection) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
   const groups = useMemo(() => groupModels(models), [models]);
   const selectedModel = model
     ? (models.find(
@@ -794,80 +869,329 @@ function ModelPicker({
       models[0] ??
       null);
 
+  const effortOptions = selectedModel?.reasoningEfforts ?? [];
+  const selectedEffort = effortOptions.includes(
+    reasoningEffort as AgentReasoningEffort,
+  )
+    ? reasoningEffort
+    : selectedModel?.defaultReasoningEffort;
+  const speedOptions = selectedModel?.speeds ?? ["standard"];
+  const selectedSpeed = speedOptions.includes(speed as AgentSpeed)
+    ? (speed as AgentSpeed)
+    : (selectedModel?.defaultSpeed ?? speedOptions[0] ?? "standard");
+  const supportsFastSpeed = speedOptions.includes("fast");
+  const fastSpeedSelected = selectedSpeed === "fast";
+  const selectedEffortIndex = selectedEffort
+    ? effortOptions.indexOf(selectedEffort)
+    : -1;
+  const summary = selectedModel
+    ? [
+        compactModelLabel(selectedModel, true),
+        selectedEffort ? reasoningEffortLabels[selectedEffort] : null,
+        selectedSpeed === "fast" ? speedLabels.fast : null,
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : loading
+      ? "Finding models…"
+      : "No models";
+
+  function selectModel(nextModel: AgentModel) {
+    const nextEfforts = nextModel.reasoningEfforts ?? [];
+    const nextSpeeds = nextModel.speeds ?? ["standard"];
+    onChange({
+      provider: nextModel.provider,
+      model: nextModel.model,
+      reasoningEffort: nextEfforts.includes(
+        selectedEffort as AgentReasoningEffort,
+      )
+        ? selectedEffort
+        : nextModel.defaultReasoningEffort,
+      speed: nextSpeeds.includes(selectedSpeed) ? selectedSpeed : nextSpeeds[0],
+    });
+  }
+
+  function selectEffort(nextEffort: AgentReasoningEffort) {
+    if (!selectedModel) {
+      return;
+    }
+    onChange({
+      provider: selectedModel.provider,
+      model: selectedModel.model,
+      reasoningEffort: nextEffort,
+      speed: selectedSpeed,
+    });
+  }
+
+  function selectSpeed(nextSpeed: AgentSpeed) {
+    if (!selectedModel) {
+      return;
+    }
+    onChange({
+      provider: selectedModel.provider,
+      model: selectedModel.model,
+      reasoningEffort: selectedEffort,
+      speed: nextSpeed,
+    });
+  }
+
   return (
-    <Combobox
-      items={groups}
-      value={selectedModel}
-      onValueChange={(nextModel: AgentModel | null) => {
-        if (nextModel) {
-          onChange(nextModel);
+    <Popover
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (!nextOpen) {
+          setAdvanced(false);
         }
       }}
-      itemToStringLabel={(item: AgentModel) =>
-        `${item.group} ${item.label} ${item.model}`
-      }
-      itemToStringValue={(item: AgentModel) =>
-        `${item.group} ${item.label} ${item.model}`
-      }
-      isItemEqualToValue={(item, value) =>
-        item.provider === value?.provider && item.model === value.model
-      }
     >
-      <ComboboxTrigger
+      <PopoverTrigger
         render={<Button type="button" variant="ghost" size="sm" />}
-        aria-label="Model"
+        aria-label={`Model settings: ${summary}`}
         aria-busy={loading}
-        className="h-7 min-w-0 max-w-64 justify-start gap-1.5 px-2 text-[11px] text-muted-foreground data-popup-open:bg-muted data-popup-open:text-foreground"
+        className="min-w-0 max-w-72 justify-start text-muted-foreground data-popup-open:bg-muted data-popup-open:text-foreground"
       >
-        <span className="min-w-0 flex-1 truncate text-left">
-          <ComboboxValue>
-            {() =>
-              loading && !selectedModel
-                ? "Finding models…"
-                : selectedModel
-                  ? `${selectedModel.group} · ${selectedModel.label}`
-                  : "No models"
-            }
-          </ComboboxValue>
-        </span>
-      </ComboboxTrigger>
+        <span className="min-w-0 flex-1 truncate text-left">{summary}</span>
+        <ChevronDown className="size-3.5 shrink-0" aria-hidden="true" />
+      </PopoverTrigger>
 
-      <ComboboxContent side="top" className="w-80 min-w-80">
-        <ComboboxInput
-          placeholder="Search models…"
-          aria-label="Search models"
-          showTrigger={false}
-          showClear
-        />
-        <ComboboxEmpty>No models found.</ComboboxEmpty>
-        <ComboboxList>
-          {(group: AgentModelGroup) => (
-            <ComboboxGroup
-              key={group.value}
-              items={group.items}
-              className="pb-1 last:pb-0"
+      <PopoverContent side="top" align="end">
+        {advanced ? (
+          <div className="grid gap-1">
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <ModelSettingTrigger
+                    label="Model"
+                    value={
+                      selectedModel
+                        ? compactModelLabel(selectedModel)
+                        : "Unavailable"
+                    }
+                    disabled={models.length === 0}
+                  />
+                }
+              />
+              <DropdownMenuContent side="right" align="start">
+                {groups.map((group, groupIndex) => (
+                  <DropdownMenuGroup key={group.value}>
+                    {groups.length > 1 ? (
+                      <DropdownMenuLabel>{group.value}</DropdownMenuLabel>
+                    ) : null}
+                    <DropdownMenuRadioGroup
+                      value={
+                        selectedModel
+                          ? `${selectedModel.provider}:${selectedModel.model}`
+                          : ""
+                      }
+                      onValueChange={(value) => {
+                        const nextModel = models.find(
+                          (availableModel) =>
+                            `${availableModel.provider}:${availableModel.model}` ===
+                            value,
+                        );
+                        if (nextModel) {
+                          selectModel(nextModel);
+                        }
+                      }}
+                    >
+                      {group.items.map((availableModel) => (
+                        <DropdownMenuRadioItem
+                          key={`${availableModel.provider}:${availableModel.model}`}
+                          value={`${availableModel.provider}:${availableModel.model}`}
+                          closeOnClick
+                        >
+                          <span className="min-w-0 flex-1 truncate font-medium">
+                            {compactModelLabel(availableModel)}
+                          </span>
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
+                    {groupIndex < groups.length - 1 ? (
+                      <DropdownMenuSeparator />
+                    ) : null}
+                  </DropdownMenuGroup>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <ModelSettingTrigger
+                    label="Effort"
+                    value={
+                      selectedEffort
+                        ? reasoningEffortLabels[selectedEffort]
+                        : "Automatic"
+                    }
+                    disabled={effortOptions.length === 0}
+                  />
+                }
+              />
+              <DropdownMenuContent side="right" align="start">
+                <DropdownMenuRadioGroup
+                  value={selectedEffort ?? ""}
+                  onValueChange={(value) =>
+                    selectEffort(value as AgentReasoningEffort)
+                  }
+                >
+                  {effortOptions.map((effort) => (
+                    <DropdownMenuRadioItem
+                      key={effort}
+                      value={effort}
+                      closeOnClick
+                    >
+                      {reasoningEffortLabels[effort]}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <ModelSettingTrigger
+                    label="Speed"
+                    value={speedLabels[selectedSpeed]}
+                    disabled={speedOptions.length < 2}
+                  />
+                }
+              />
+              <DropdownMenuContent side="right" align="start">
+                <DropdownMenuRadioGroup
+                  value={selectedSpeed}
+                  onValueChange={(value) => selectSpeed(value as AgentSpeed)}
+                >
+                  {speedOptions.map((availableSpeed) => (
+                    <DropdownMenuRadioItem
+                      key={availableSpeed}
+                      value={availableSpeed}
+                      closeOnClick
+                    >
+                      <span>{speedLabels[availableSpeed]}</span>
+                      {availableSpeed === "fast" ? (
+                        <Zap
+                          className="ml-1 size-3.5 text-primary"
+                          aria-hidden="true"
+                        />
+                      ) : null}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            <Separator className="my-1" />
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="w-full justify-start text-muted-foreground"
+              onClick={() => setAdvanced(false)}
             >
-              <ComboboxLabel className="px-2 pt-2 pb-1 text-[9px] font-semibold tracking-[0.1em] uppercase">
-                {group.value}
-              </ComboboxLabel>
-              <ComboboxCollection>
-                {(availableModel: AgentModel) => (
-                  <ComboboxItem
-                    key={`${availableModel.provider}:${availableModel.model}`}
-                    value={availableModel}
-                    className="min-h-8 px-2 py-1.5 text-xs"
+              Advanced
+              <ChevronDown className="rotate-180" aria-hidden="true" />
+            </Button>
+          </div>
+        ) : (
+          <div className="grid gap-3">
+            <div className="flex items-center justify-between">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground"
+                onClick={() => setAdvanced(true)}
+              >
+                Advanced
+                <ChevronRight aria-hidden="true" />
+              </Button>
+              <Button
+                type="button"
+                variant={fastSpeedSelected ? "secondary" : "ghost"}
+                size="icon-sm"
+                disabled={!supportsFastSpeed}
+                aria-label={
+                  supportsFastSpeed
+                    ? fastSpeedSelected
+                      ? "Use standard speed"
+                      : "Use fast speed"
+                    : "Fast speed unavailable for this model"
+                }
+                aria-pressed={fastSpeedSelected}
+                title={
+                  supportsFastSpeed
+                    ? fastSpeedSelected
+                      ? "Use standard speed"
+                      : "Use fast speed"
+                    : "Fast speed unavailable for this model"
+                }
+                onClick={() =>
+                  selectSpeed(fastSpeedSelected ? "standard" : "fast")
+                }
+              >
+                <Zap
+                  className={cn(fastSpeedSelected && "fill-current")}
+                  aria-hidden="true"
+                />
+              </Button>
+            </div>
+
+            {effortOptions.length > 1 ? (
+              <div className="grid gap-2 px-1 pb-1">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-medium">Reasoning</span>
+                  <span className="text-muted-foreground">
+                    {selectedEffort
+                      ? reasoningEffortLabels[selectedEffort]
+                      : "Automatic"}
+                  </span>
+                </div>
+                <div className="relative flex h-8 items-center">
+                  <div
+                    className="pointer-events-none absolute inset-x-0 top-1/2 z-30 flex -translate-y-1/2 items-center justify-between px-px"
+                    aria-hidden="true"
                   >
-                    <span className="min-w-0 flex-1 truncate font-medium">
-                      {availableModel.label}
-                    </span>
-                  </ComboboxItem>
-                )}
-              </ComboboxCollection>
-            </ComboboxGroup>
-          )}
-        </ComboboxList>
-      </ComboboxContent>
-    </Combobox>
+                    {effortOptions.map((effort, index) => (
+                      <span
+                        key={effort}
+                        className={cn(
+                          "size-1.5 rounded-full bg-primary-foreground/55",
+                          index === selectedEffortIndex && "opacity-0",
+                        )}
+                      />
+                    ))}
+                  </div>
+                  <Slider
+                    value={[Math.max(0, selectedEffortIndex)]}
+                    min={0}
+                    max={effortOptions.length - 1}
+                    step={1}
+                    aria-label={`Reasoning effort: ${selectedEffort ? reasoningEffortLabels[selectedEffort] : "Automatic"}`}
+                    onValueChange={(value) => {
+                      const index = Array.isArray(value) ? value[0] : value;
+                      const nextEffort = effortOptions[index ?? 0];
+                      if (nextEffort) {
+                        selectEffort(nextEffort);
+                      }
+                    }}
+                    className="relative z-20 [&_[data-slot=slider-track]]:h-3 [&_[data-slot=slider-thumb]]:size-6 [&_[data-slot=slider-thumb]]:border-0 [&_[data-slot=slider-thumb]]:shadow-sm"
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
+                {selectedModel
+                  ? `${compactModelLabel(selectedModel)} sets effort automatically.`
+                  : "Choose a model in Advanced."}
+              </div>
+            )}
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -1382,7 +1706,7 @@ function Composer({
   preparationError?: string;
   onProjectChange: (projectId: string | null) => void;
   onCreateProject: () => void;
-  onModelChange: (model: AgentModel) => void;
+  onModelChange: (selection: AgentModelSelection) => void;
   onAccessModeChange: (mode: AgentAccessMode) => void;
   onExecutionModeChange: (mode: SessionExecutionMode) => void;
   onSend: ChatWorkspaceProps["onSend"];
@@ -1544,6 +1868,8 @@ function Composer({
                   <ModelPicker
                     provider={provider}
                     model={model}
+                    reasoningEffort={session.reasoningEffort}
+                    speed={session.speed}
                     models={models}
                     loading={modelsLoading}
                     onChange={onModelChange}
@@ -1631,7 +1957,7 @@ function SessionView({
   projects: Project[];
   onProjectChange: (projectId: string | null) => void;
   onCreateProject: () => void;
-  onModelChange: (model: AgentModel) => void;
+  onModelChange: (selection: AgentModelSelection) => void;
   onAccessModeChange: (mode: AgentAccessMode) => void;
   onExecutionModeChange: ChatWorkspaceProps["onExecutionModeChange"];
   onSend: ChatWorkspaceProps["onSend"];

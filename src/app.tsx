@@ -35,6 +35,8 @@ import type {
   AgentModel,
   AgentModelSelection,
   AgentProvider,
+  AgentReasoningEffort,
+  AgentSpeed,
   AgentUsage,
   ChatMessage,
   ChatSession,
@@ -153,6 +155,21 @@ function migrateProvider(value: unknown): AgentProvider | undefined {
     : undefined;
 }
 
+function normalizeReasoningEffort(
+  value: unknown,
+): AgentReasoningEffort | undefined {
+  return typeof value === "string" &&
+    ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(
+      value,
+    )
+    ? (value as AgentReasoningEffort)
+    : undefined;
+}
+
+function normalizeSpeed(value: unknown): AgentSpeed | undefined {
+  return value === "standard" || value === "fast" ? value : undefined;
+}
+
 function markSessionViewed(
   workspace: WorkspaceState,
   projectId: string | null,
@@ -227,6 +244,8 @@ function parseWorkspace(stored: string | null): WorkspaceState {
         worktree,
         provider: migrateProvider(legacyProvider),
         model: legacyProvider === "agy" ? "auto" : session.model,
+        reasoningEffort: normalizeReasoningEffort(session.reasoningEffort),
+        speed: normalizeSpeed(session.speed),
         conversationId: incompatibleConversation
           ? undefined
           : session.conversationId,
@@ -316,6 +335,10 @@ function parseWorkspace(stored: string | null): WorkspaceState {
                 (parsed.lastModel.provider as string) === "agy"
                   ? "auto"
                   : parsed.lastModel.model,
+              reasoningEffort: normalizeReasoningEffort(
+                parsed.lastModel.reasoningEffort,
+              ),
+              speed: normalizeSpeed(parsed.lastModel.speed),
             }
           : undefined,
     };
@@ -775,17 +798,52 @@ function ConductorApp() {
 
   function defaultModelForNewSession(): AgentModelSelection | undefined {
     if (activeSession?.model) {
-      return {
+      return resolveModelSelection({
         provider: activeSession.provider ?? "gemini",
         model: activeSession.model,
-      };
+        reasoningEffort: activeSession.reasoningEffort,
+        speed: activeSession.speed,
+      });
     }
 
-    return (
+    const selection =
       workspace.lastModel ??
       availableModels.find((model) => model.provider === "gemini") ??
-      availableModels[0]
+      availableModels[0];
+    return selection ? resolveModelSelection(selection) : undefined;
+  }
+
+  function resolveModelSelection(
+    selection: AgentModelSelection,
+  ): AgentModelSelection {
+    const metadata = availableModels.find(
+      (model) =>
+        model.provider === selection.provider &&
+        model.model === selection.model,
     );
+    if (!metadata) {
+      return {
+        ...selection,
+        speed: selection.speed ?? "standard",
+      };
+    }
+    const reasoningEfforts = metadata?.reasoningEfforts ?? [];
+    const reasoningEffort = reasoningEfforts.includes(
+      selection.reasoningEffort as AgentReasoningEffort,
+    )
+      ? selection.reasoningEffort
+      : metadata?.defaultReasoningEffort;
+    const speeds = metadata?.speeds ?? ["standard"];
+    const speed = speeds.includes(selection.speed as AgentSpeed)
+      ? selection.speed
+      : (metadata.defaultSpeed ?? speeds[0]);
+
+    return {
+      provider: selection.provider,
+      model: selection.model,
+      reasoningEffort,
+      speed,
+    };
   }
 
   function clearPendingSession(sessionId?: string) {
@@ -882,6 +940,8 @@ function ConductorApp() {
       executionMode: "local",
       provider: defaultModel?.provider,
       model: defaultModel?.model,
+      reasoningEffort: defaultModel?.reasoningEffort,
+      speed: defaultModel?.speed,
       messages: [],
     };
     const pending = { projectId, session };
@@ -1251,21 +1311,24 @@ function ConductorApp() {
     setRemovingProjectId(null);
   }
 
-  function selectModel(selection: AgentModel) {
+  function selectModel(selection: AgentModelSelection) {
     if (!activeSession) {
       return;
     }
+    const resolvedSelection = resolveModelSelection(selection);
 
     if (pendingSession?.session.id === activeSession.id) {
       const nextPending = {
         ...pendingSession,
         session: {
           ...pendingSession.session,
-          provider: selection.provider,
-          model: selection.model,
+          provider: resolvedSelection.provider,
+          model: resolvedSelection.model,
+          reasoningEffort: resolvedSelection.reasoningEffort,
+          speed: resolvedSelection.speed,
           usage:
-            pendingSession.session.provider === selection.provider &&
-            pendingSession.session.model === selection.model
+            pendingSession.session.provider === resolvedSelection.provider &&
+            pendingSession.session.model === resolvedSelection.model
               ? pendingSession.session.usage
               : undefined,
         },
@@ -1275,8 +1338,7 @@ function ConductorApp() {
       setWorkspace((current) => ({
         ...current,
         lastModel: {
-          provider: selection.provider,
-          model: selection.model,
+          ...resolvedSelection,
         },
       }));
       return;
@@ -1287,8 +1349,7 @@ function ConductorApp() {
     setWorkspace((current) => ({
       ...current,
       lastModel: {
-        provider: selection.provider,
-        model: selection.model,
+        ...resolvedSelection,
       },
       recentChats:
         projectId === null
@@ -1296,11 +1357,13 @@ function ConductorApp() {
               session.id === sessionId
                 ? {
                     ...session,
-                    provider: selection.provider,
-                    model: selection.model,
+                    provider: resolvedSelection.provider,
+                    model: resolvedSelection.model,
+                    reasoningEffort: resolvedSelection.reasoningEffort,
+                    speed: resolvedSelection.speed,
                     usage:
-                      session.provider === selection.provider &&
-                      session.model === selection.model
+                      session.provider === resolvedSelection.provider &&
+                      session.model === resolvedSelection.model
                         ? session.usage
                         : undefined,
                   }
@@ -1315,11 +1378,13 @@ function ConductorApp() {
                 session.id === sessionId
                   ? {
                       ...session,
-                      provider: selection.provider,
-                      model: selection.model,
+                      provider: resolvedSelection.provider,
+                      model: resolvedSelection.model,
+                      reasoningEffort: resolvedSelection.reasoningEffort,
+                      speed: resolvedSelection.speed,
                       usage:
-                        session.provider === selection.provider &&
-                        session.model === selection.model
+                        session.provider === resolvedSelection.provider &&
+                        session.model === resolvedSelection.model
                           ? session.usage
                           : undefined,
                     }
@@ -1447,10 +1512,12 @@ function ConductorApp() {
       runId,
     };
 
-    const selectedModel = runSession.model
+    const rawSelectedModel = runSession.model
       ? {
           provider: runSession.provider ?? "gemini",
           model: runSession.model,
+          reasoningEffort: runSession.reasoningEffort,
+          speed: runSession.speed,
         }
       : (workspace.lastModel ??
         availableModels.find(
@@ -1462,6 +1529,9 @@ function ConductorApp() {
         ) ??
         availableModels.find((model) => model.provider === "gemini") ??
         availableModels[0]);
+    const selectedModel = rawSelectedModel
+      ? resolveModelSelection(rawSelectedModel)
+      : undefined;
     const provider = selectedModel?.provider ?? runSession.provider ?? "gemini";
     const accessMode = resolveAgentAccessMode(
       provider,
@@ -1475,12 +1545,7 @@ function ConductorApp() {
     setWorkspace((current) => ({
       ...current,
       activeSessionId: sessionId,
-      lastModel: selectedModel
-        ? {
-            provider: selectedModel.provider,
-            model: selectedModel.model,
-          }
-        : current.lastModel,
+      lastModel: selectedModel ? { ...selectedModel } : current.lastModel,
       recentChats:
         projectId === null
           ? isPendingSession
@@ -1490,6 +1555,8 @@ function ConductorApp() {
                   ...runSession,
                   provider,
                   model: selectedModel?.model,
+                  reasoningEffort: selectedModel?.reasoningEffort,
+                  speed: selectedModel?.speed,
                   title: titleFromPrompt(prompt),
                   hasUnreadCompletion: false,
                   messages: [userMessage, assistantMessage],
@@ -1503,6 +1570,8 @@ function ConductorApp() {
                       worktree: runSession.worktree,
                       provider,
                       model: selectedModel?.model,
+                      reasoningEffort: selectedModel?.reasoningEffort,
+                      speed: selectedModel?.speed,
                       hasUnreadCompletion: false,
                       title:
                         session.messages.length === 0
@@ -1528,6 +1597,8 @@ function ConductorApp() {
                       ...runSession,
                       provider,
                       model: selectedModel?.model,
+                      reasoningEffort: selectedModel?.reasoningEffort,
+                      speed: selectedModel?.speed,
                       title: titleFromPrompt(prompt),
                       hasUnreadCompletion: false,
                       messages: [userMessage, assistantMessage],
@@ -1541,6 +1612,8 @@ function ConductorApp() {
                           worktree: runSession.worktree,
                           provider,
                           model: selectedModel?.model,
+                          reasoningEffort: selectedModel?.reasoningEffort,
+                          speed: selectedModel?.speed,
                           hasUnreadCompletion: false,
                           title:
                             session.messages.length === 0
@@ -1570,6 +1643,8 @@ function ConductorApp() {
           runSession.worktree?.workingDirectory ?? activeProject?.sourceFolder,
         provider,
         model: selectedModel?.model,
+        reasoningEffort: selectedModel?.reasoningEffort,
+        speed: selectedModel?.speed,
         accessMode,
         conversationId,
       })

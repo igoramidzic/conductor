@@ -30,7 +30,9 @@ import {
   type AgentEvent,
   type AgentModel,
   type AgentProvider,
+  type AgentReasoningEffort,
   type AgentRunRequest,
+  type AgentSpeed,
   type AgentUsage,
   type SessionWorktree,
   STANDALONE_TERMINAL_GROUP_ID,
@@ -548,6 +550,7 @@ function readGeminiModels(): AgentModel[] {
       label: "Auto",
       group: "Gemini",
       contextWindow: GEMINI_CONTEXT_WINDOW,
+      speeds: ["standard"],
     },
     {
       provider: "gemini",
@@ -555,6 +558,7 @@ function readGeminiModels(): AgentModel[] {
       label: "Pro",
       group: "Gemini",
       contextWindow: GEMINI_CONTEXT_WINDOW,
+      speeds: ["standard"],
     },
     {
       provider: "gemini",
@@ -562,6 +566,7 @@ function readGeminiModels(): AgentModel[] {
       label: "Flash",
       group: "Gemini",
       contextWindow: GEMINI_CONTEXT_WINDOW,
+      speeds: ["standard"],
     },
     {
       provider: "gemini",
@@ -569,6 +574,7 @@ function readGeminiModels(): AgentModel[] {
       label: "Flash Lite",
       group: "Gemini",
       contextWindow: GEMINI_CONTEXT_WINDOW,
+      speeds: ["standard"],
     },
   ];
 }
@@ -585,6 +591,9 @@ function readClaudeModels(): AgentModel[] {
       label: "Fable (latest)",
       group: "Claude",
       contextWindow: CLAUDE_CONTEXT_WINDOW,
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "medium",
+      speeds: ["standard"],
     },
     {
       provider: "claude",
@@ -592,6 +601,9 @@ function readClaudeModels(): AgentModel[] {
       label: "Opus (latest)",
       group: "Claude",
       contextWindow: CLAUDE_CONTEXT_WINDOW,
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "medium",
+      speeds: ["standard"],
     },
     {
       provider: "claude",
@@ -599,6 +611,9 @@ function readClaudeModels(): AgentModel[] {
       label: "Sonnet (latest)",
       group: "Claude",
       contextWindow: CLAUDE_CONTEXT_WINDOW,
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "medium",
+      speeds: ["standard"],
     },
     {
       provider: "claude",
@@ -606,6 +621,9 @@ function readClaudeModels(): AgentModel[] {
       label: "Haiku (latest)",
       group: "Claude",
       contextWindow: CLAUDE_CONTEXT_WINDOW,
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "medium",
+      speeds: ["standard"],
     },
   ];
 
@@ -635,6 +653,9 @@ function readClaudeModels(): AgentModel[] {
         contextWindow: option.value.includes("[1m]")
           ? 1_000_000
           : CLAUDE_CONTEXT_WINDOW,
+        reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+        defaultReasoningEffort: "medium",
+        speeds: ["standard"],
       });
     }
   } catch {
@@ -650,6 +671,17 @@ function readCodexModels(): AgentModel[] {
   }
 
   try {
+    const configPath = path.join(app.getPath("home"), ".codex", "config.toml");
+    const config = fs.existsSync(configPath)
+      ? fs.readFileSync(configPath, "utf8")
+      : "";
+    const configuredModel = config.match(/^model\s*=\s*["']([^"']+)["']/m)?.[1];
+    const configuredReasoningEffort = config.match(
+      /^model_reasoning_effort\s*=\s*["']([^"']+)["']/m,
+    )?.[1];
+    const configuredServiceTier = config.match(
+      /^service_tier\s*=\s*["']([^"']+)["']/m,
+    )?.[1];
     const cachePath = path.join(
       app.getPath("home"),
       ".codex",
@@ -662,8 +694,25 @@ function readCodexModels(): AgentModel[] {
         visibility?: unknown;
         context_window?: unknown;
         effective_context_window_percent?: unknown;
+        default_reasoning_level?: unknown;
+        supported_reasoning_levels?: Array<{
+          effort?: unknown;
+        }>;
+        additional_speed_tiers?: unknown;
+        service_tiers?: Array<{
+          id?: unknown;
+        }>;
       }>;
     };
+    const reasoningEfforts = new Set<AgentReasoningEffort>([
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+    ]);
     return (cache.models ?? [])
       .filter(
         (model) =>
@@ -671,27 +720,73 @@ function readCodexModels(): AgentModel[] {
           typeof model.slug === "string" &&
           MODEL_ID_PATTERN.test(model.slug),
       )
-      .map((model) => ({
-        provider: "codex" as const,
-        model: model.slug as string,
-        label:
-          typeof model.display_name === "string"
-            ? model.display_name
-            : (model.slug as string),
-        group: "Codex",
-        contextWindow:
-          typeof model.context_window === "number" &&
-          Number.isFinite(model.context_window) &&
-          model.context_window > 0
-            ? Math.floor(
-                model.context_window *
-                  (typeof model.effective_context_window_percent === "number" &&
-                  Number.isFinite(model.effective_context_window_percent)
-                    ? model.effective_context_window_percent / 100
-                    : 1),
-              )
-            : undefined,
-      }));
+      .map((model) => {
+        const supportedReasoningEfforts = (
+          model.supported_reasoning_levels ?? []
+        )
+          .map((level) => level.effort)
+          .filter(
+            (effort): effort is AgentReasoningEffort =>
+              typeof effort === "string" &&
+              reasoningEfforts.has(effort as AgentReasoningEffort),
+          );
+        const catalogDefaultReasoningEffort =
+          typeof model.default_reasoning_level === "string" &&
+          reasoningEfforts.has(
+            model.default_reasoning_level as AgentReasoningEffort,
+          )
+            ? (model.default_reasoning_level as AgentReasoningEffort)
+            : supportedReasoningEfforts[0];
+        const defaultReasoningEffort =
+          model.slug === configuredModel &&
+          typeof configuredReasoningEffort === "string" &&
+          reasoningEfforts.has(
+            configuredReasoningEffort as AgentReasoningEffort,
+          ) &&
+          supportedReasoningEfforts.includes(
+            configuredReasoningEffort as AgentReasoningEffort,
+          )
+            ? (configuredReasoningEffort as AgentReasoningEffort)
+            : catalogDefaultReasoningEffort;
+        const hasFastSpeed =
+          (Array.isArray(model.additional_speed_tiers) &&
+            model.additional_speed_tiers.includes("fast")) ||
+          (model.service_tiers ?? []).some((tier) => tier.id === "priority");
+
+        return {
+          provider: "codex" as const,
+          model: model.slug as string,
+          label:
+            typeof model.display_name === "string"
+              ? model.display_name
+              : (model.slug as string),
+          group: "Codex",
+          contextWindow:
+            typeof model.context_window === "number" &&
+            Number.isFinite(model.context_window) &&
+            model.context_window > 0
+              ? Math.floor(
+                  model.context_window *
+                    (typeof model.effective_context_window_percent ===
+                      "number" &&
+                    Number.isFinite(model.effective_context_window_percent)
+                      ? model.effective_context_window_percent / 100
+                      : 1),
+                )
+              : undefined,
+          reasoningEfforts: supportedReasoningEfforts,
+          defaultReasoningEffort,
+          speeds: hasFastSpeed
+            ? (["standard", "fast"] satisfies AgentSpeed[])
+            : (["standard"] satisfies AgentSpeed[]),
+          defaultSpeed:
+            model.slug === configuredModel &&
+            hasFastSpeed &&
+            configuredServiceTier === "priority"
+              ? "fast"
+              : "standard",
+        };
+      });
   } catch {
     return [];
   }
@@ -763,6 +858,28 @@ function assertRunRequest(request: AgentRunRequest) {
     (typeof request.model !== "string" || !MODEL_ID_PATTERN.test(request.model))
   ) {
     throw new Error("Invalid model identifier.");
+  }
+
+  const reasoningEfforts = new Set<AgentReasoningEffort>([
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+  ]);
+  if (
+    request.reasoningEffort !== undefined &&
+    !reasoningEfforts.has(request.reasoningEffort)
+  ) {
+    throw new Error("Invalid reasoning effort.");
+  }
+  if (
+    request.speed !== undefined &&
+    !new Set<AgentSpeed>(["standard", "fast"]).has(request.speed)
+  ) {
+    throw new Error("Invalid response speed.");
   }
 
   const provider = request.provider ?? "gemini";
@@ -2329,6 +2446,7 @@ function startCodexRun(event: IpcMainInvokeEvent, request: AgentRunRequest) {
     const cwd = request.sourceFolder ?? app.getPath("home");
     const access = {
       model: request.model ?? null,
+      serviceTier: request.speed === "fast" ? "priority" : "default",
       cwd,
       approvalsReviewer: "user",
       ...codexAppServerAccess(request),
@@ -2349,6 +2467,8 @@ function startCodexRun(event: IpcMainInvokeEvent, request: AgentRunRequest) {
     await requestRpc("turn/start", {
       threadId: thread.id,
       summary: "concise",
+      effort: request.reasoningEffort ?? null,
+      serviceTier: request.speed === "fast" ? "priority" : "default",
       input: [
         {
           type: "text",
@@ -2398,6 +2518,9 @@ function createRunCommand(request: AgentRunRequest) {
     ];
     if (request.model) {
       args.push("--model", request.model);
+    }
+    if (request.reasoningEffort) {
+      args.push("--effort", request.reasoningEffort);
     }
     if (request.conversationId) {
       args.push("--resume", request.conversationId);

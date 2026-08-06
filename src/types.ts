@@ -49,6 +49,17 @@ export type AgentApprovalResponse = {
 
 export type AgentProvider = "gemini" | "claude" | "codex";
 
+export type AgentReasoningEffort =
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | "ultra";
+
+export type AgentSpeed = "standard" | "fast";
+
 export type AgentAccessMode =
   | "ask"
   | "read-only"
@@ -67,9 +78,16 @@ export type AgentModel = {
   label: string;
   group: string;
   contextWindow?: number;
+  reasoningEfforts?: AgentReasoningEffort[];
+  defaultReasoningEffort?: AgentReasoningEffort;
+  speeds?: AgentSpeed[];
+  defaultSpeed?: AgentSpeed;
 };
 
-export type AgentModelSelection = Pick<AgentModel, "provider" | "model">;
+export type AgentModelSelection = Pick<AgentModel, "provider" | "model"> & {
+  reasoningEffort?: AgentReasoningEffort;
+  speed?: AgentSpeed;
+};
 
 export type ChatMessage = {
   id: string;
@@ -154,6 +172,8 @@ export type ChatSession = {
   worktree?: SessionWorktree;
   provider?: AgentProvider;
   model?: string;
+  reasoningEffort?: AgentReasoningEffort;
+  speed?: AgentSpeed;
   conversationId?: string;
   conversationProvider?: AgentProvider;
   usage?: AgentUsage;
@@ -242,6 +262,8 @@ export type AgentRunRequest = {
   sourceFolder?: string;
   provider?: AgentProvider;
   model?: string;
+  reasoningEffort?: AgentReasoningEffort;
+  speed?: AgentSpeed;
   accessMode?: AgentAccessMode;
   conversationId?: string;
 };
