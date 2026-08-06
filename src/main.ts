@@ -24,6 +24,10 @@ import { getAgentAccessArgs, resolveAgentAccessMode } from "./agent-access";
 import { readRecordedGeminiUsage } from "./gemini-context-usage";
 import { getGeminiAccountUsage } from "./gemini-usage";
 import {
+  classifyResponseLink,
+  resolveResponseFilePath,
+} from "./response-links";
+import {
   type AgentActivityKind,
   type AgentApprovalRequest,
   type AgentApprovalResponse,
@@ -34,6 +38,7 @@ import {
   type AgentRunRequest,
   type AgentSpeed,
   type AgentUsage,
+  type ResponseLinkOpenRequest,
   type SessionWorktree,
   STANDALONE_TERMINAL_GROUP_ID,
   type TerminalCreateRequest,
@@ -2690,6 +2695,43 @@ ipcMain.handle("worktree:reveal", (_event, worktreePath: string) => {
   }
   shell.showItemInFolder(resolvedPath);
 });
+
+ipcMain.handle(
+  "response-link:open",
+  async (_event, request: ResponseLinkOpenRequest) => {
+    if (
+      !request ||
+      typeof request !== "object" ||
+      typeof request.href !== "string" ||
+      request.href.length === 0 ||
+      request.href.length > 16_384 ||
+      (request.sourceFolder !== undefined &&
+        (typeof request.sourceFolder !== "string" ||
+          !path.isAbsolute(request.sourceFolder)))
+    ) {
+      throw new Error("Invalid response link.");
+    }
+
+    const target = classifyResponseLink(request.href);
+    if (target.kind === "anchor") {
+      return;
+    }
+    if (target.kind === "external") {
+      await shell.openExternal(target.url);
+      return;
+    }
+
+    const filePath = resolveResponseFilePath(
+      target.href,
+      request.sourceFolder,
+      app.getPath("home"),
+    );
+    const error = await shell.openPath(filePath);
+    if (error) {
+      throw new Error(error);
+    }
+  },
+);
 
 ipcMain.handle("agent:models", () => listAvailableModels());
 

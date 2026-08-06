@@ -100,6 +100,7 @@ import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import {
+  activitySummary,
   type ChatTextPart,
   timelineBlocks,
   visibleMessageParts,
@@ -373,10 +374,42 @@ function splitResponseChunks(chunks: string[]) {
   );
 }
 
-function MarkdownResponse({ children }: { children: string }) {
+function MarkdownResponse({
+  children,
+  sourceFolder,
+}: {
+  children: string;
+  sourceFolder?: string;
+}) {
   return (
     <div className="agent-markdown">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ node: _node, href, ...props }) => (
+            <a
+              {...props}
+              href={href}
+              onClick={(event) => {
+                if (!href || href.startsWith("#")) {
+                  return;
+                }
+                event.preventDefault();
+                void window.electron
+                  .openResponseLink({
+                    href,
+                    ...(sourceFolder ? { sourceFolder } : {}),
+                  })
+                  .catch((error: unknown) => {
+                    console.error("Unable to open response link.", error);
+                  });
+              }}
+            />
+          ),
+        }}
+      >
+        {children}
+      </ReactMarkdown>
     </div>
   );
 }
@@ -481,7 +514,7 @@ function ToolCall({ activity }: { activity: AgentActivity }) {
       <Marker
         role="status"
         className={cn(
-          "min-w-0 gap-2 py-0 text-[13px] leading-5 text-muted-foreground transition-colors hover:text-foreground motion-reduce:transition-none",
+          "min-w-0 gap-2 py-px text-[13px] leading-5 text-muted-foreground transition-colors hover:text-foreground motion-reduce:transition-none",
           activity.status === "error" &&
             "text-destructive hover:text-destructive",
         )}
@@ -507,7 +540,7 @@ function ToolCall({ activity }: { activity: AgentActivity }) {
       <CollapsibleTrigger
         type="button"
         className={cn(
-          "group/tool-call -ml-1 block max-w-full rounded-md px-1 py-0 text-left text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 motion-reduce:transition-none",
+          "group/tool-call -ml-1 block max-w-full rounded-md px-1 py-px text-left text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 motion-reduce:transition-none",
           activity.status === "error" &&
             "text-destructive hover:text-destructive",
         )}
@@ -536,55 +569,6 @@ function ToolCall({ activity }: { activity: AgentActivity }) {
       </CollapsibleContent>
     </Collapsible>
   );
-}
-
-function activitySummary(activities: AgentActivity[]) {
-  const hasReasoning = activities.some(
-    (activity) => activity.kind === "reasoning",
-  );
-  const hasFileChanges = activities.some(
-    (activity) => activity.kind === "file-change",
-  );
-  const hasReads = activities.some(
-    (activity) =>
-      activity.kind === "command" && activity.label.startsWith("Read "),
-  );
-  const hasFileLists = activities.some(
-    (activity) =>
-      activity.kind === "command" && activity.label.startsWith("Listed "),
-  );
-  const hasProjectSearches = activities.some(
-    (activity) =>
-      activity.kind === "command" && activity.label.startsWith("Searched "),
-  );
-  const hasWebSearches = activities.some(
-    (activity) => activity.kind === "web-search",
-  );
-  const commandCount = activities.filter(
-    (activity) =>
-      activity.kind === "command" &&
-      !activity.label.startsWith("Read ") &&
-      !activity.label.startsWith("Listed ") &&
-      !activity.label.startsWith("Searched "),
-  ).length;
-  const toolCount = activities.filter(
-    (activity) => activity.kind === "tool" || activity.kind === "other",
-  ).length;
-  const phrases = [
-    hasFileChanges ? "edited files" : null,
-    hasReads ? "read files" : null,
-    hasFileLists ? "listed files" : null,
-    hasProjectSearches ? "searched the project" : null,
-    hasWebSearches ? "searched the web" : null,
-    toolCount > 0 ? `used ${toolCount === 1 ? "a tool" : "tools"}` : null,
-    commandCount > 0
-      ? `ran ${commandCount === 1 ? "a command" : "commands"}`
-      : null,
-  ].filter((phrase): phrase is string => phrase !== null);
-  const summary =
-    phrases.join(", ") ||
-    (hasReasoning ? "thought through the request" : "worked on the request");
-  return `${summary[0]?.toUpperCase() ?? ""}${summary.slice(1)}`;
 }
 
 function ActivitySummaryIcon({ activities }: { activities: AgentActivity[] }) {
@@ -662,17 +646,23 @@ function ResponseTextPart({
   messageId,
   part,
   complete,
+  sourceFolder,
 }: {
   messageId: string;
   part: ChatTextPart;
   complete: boolean;
+  sourceFolder?: string;
 }) {
   const animatedChunks = useMemo(
     () => splitResponseChunks(part.chunks),
     [part.chunks],
   );
   if (complete) {
-    return <MarkdownResponse>{part.content}</MarkdownResponse>;
+    return (
+      <MarkdownResponse sourceFolder={sourceFolder}>
+        {part.content}
+      </MarkdownResponse>
+    );
   }
   return (
     <div className="streaming-response text-[14px] leading-6 whitespace-pre-wrap">
@@ -721,7 +711,13 @@ function ActiveRunIndicator({
   );
 }
 
-function AgentResponse({ message }: { message: ChatMessage }) {
+function AgentResponse({
+  message,
+  sourceFolder,
+}: {
+  message: ChatMessage;
+  sourceFolder?: string;
+}) {
   const activities = (message.activities ?? []).filter(
     (activity) =>
       !(activity.id === "item_0" && activity.label.toLowerCase() === "error"),
@@ -754,6 +750,7 @@ function AgentResponse({ message }: { message: ChatMessage }) {
               messageId={message.id}
               part={block.part}
               complete={!isActive}
+              sourceFolder={sourceFolder}
             />
           ) : (
             <ExecutionTrace
@@ -2043,6 +2040,8 @@ function SessionView({
   preparingSession: boolean;
   preparationError?: string;
 }) {
+  const sourceFolder =
+    session.worktree?.workingDirectory ?? project?.sourceFolder;
   const activeMessage = [...session.messages]
     .reverse()
     .find(
@@ -2080,7 +2079,10 @@ function SessionView({
                   {message.role === "user" ? (
                     <UserMessage message={message} />
                   ) : (
-                    <AgentResponse message={message} />
+                    <AgentResponse
+                      message={message}
+                      sourceFolder={sourceFolder}
+                    />
                   )}
                 </MessageScrollerItem>
               ))}

@@ -4,6 +4,7 @@ import type {
   AgentModel,
   AgentRunRequest,
   GeminiAccountUsage,
+  ResponseLinkOpenRequest,
   SessionWorktree,
   TerminalCreateRequest,
   TerminalEvent,
@@ -28,6 +29,7 @@ declare global {
         request: WorktreeCreateRequest,
       ) => Promise<SessionWorktree>;
       revealWorktree: (worktreePath: string) => Promise<void>;
+      openResponseLink: (request: ResponseLinkOpenRequest) => Promise<void>;
       listAgentModels: () => Promise<AgentModel[]>;
       getGeminiUsage: () => Promise<GeminiAccountUsage>;
       runAgent: (request: AgentRunRequest) => Promise<void>;

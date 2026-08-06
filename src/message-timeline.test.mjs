@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  activitySummary,
   appendMessageText,
   ensureActivityPart,
   startTextPart,
@@ -142,6 +143,44 @@ test("settles a tool group as soon as the next text part starts", () => {
   );
   assert.equal(blocks.at(-1)?.type, "activities");
   assert.equal(blocks.at(-1)?.settled, true);
+});
+
+test("names tools in the completed activity summary", () => {
+  assert.equal(
+    activitySummary([
+      {
+        id: "tool-1",
+        kind: "tool",
+        label: "Write File",
+        status: "complete",
+      },
+    ]),
+    "Used Write File",
+  );
+
+  assert.equal(
+    activitySummary([
+      {
+        id: "tool-1",
+        kind: "tool",
+        label: "Write File",
+        status: "complete",
+      },
+      {
+        id: "tool-2",
+        kind: "tool",
+        label: "Write File",
+        status: "complete",
+      },
+      {
+        id: "tool-3",
+        kind: "tool",
+        label: "Used tool",
+        status: "complete",
+      },
+    ]),
+    "Used Write File twice and another tool",
+  );
 });
 
 test("keeps a final-only response visible when no text delta arrived", () => {

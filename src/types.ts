@@ -270,6 +270,11 @@ export type WorktreeCreateRequest = {
   name: string;
 };
 
+export type ResponseLinkOpenRequest = {
+  href: string;
+  sourceFolder?: string;
+};
+
 export type AgentRunRequest = {
   runId: string;
   prompt: string;

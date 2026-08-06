@@ -6,6 +6,7 @@ import type {
   AgentModel,
   AgentRunRequest,
   GeminiAccountUsage,
+  ResponseLinkOpenRequest,
   SessionWorktree,
   TerminalCreateRequest,
   TerminalEvent,
@@ -35,6 +36,8 @@ contextBridge.exposeInMainWorld("electron", {
     ipcRenderer.invoke("worktree:create", request) as Promise<SessionWorktree>,
   revealWorktree: (worktreePath: string) =>
     ipcRenderer.invoke("worktree:reveal", worktreePath) as Promise<void>,
+  openResponseLink: (request: ResponseLinkOpenRequest) =>
+    ipcRenderer.invoke("response-link:open", request) as Promise<void>,
   listAgentModels: () =>
     ipcRenderer.invoke("agent:models") as Promise<AgentModel[]>,
   getGeminiUsage: () =>
