@@ -928,6 +928,8 @@ type ParserState = {
   usage?: AgentUsage;
   activityLabels: Map<string, string>;
   activityIdsByIndex: Map<number, string>;
+  textPartIdsByIndex: Map<number, string>;
+  nextTextPartSequence: number;
   stdoutLines: number;
   unparseableLines: number;
   eventCounts: Record<string, number>;
@@ -977,12 +979,30 @@ function sendDelta(
   request: AgentRunRequest,
   state: ParserState,
   text: string,
+  partId?: string,
 ) {
   if (!text) {
     return;
   }
   state.response += text;
-  sendAgentEvent(event, { runId: request.runId, type: "delta", text });
+  sendAgentEvent(event, {
+    runId: request.runId,
+    type: "delta",
+    text,
+    partId,
+  });
+}
+
+function sendTextStart(
+  event: IpcMainInvokeEvent,
+  request: AgentRunRequest,
+  partId: string,
+) {
+  sendAgentEvent(event, {
+    runId: request.runId,
+    type: "text-start",
+    partId,
+  });
 }
 
 function sendComplete(
@@ -1400,6 +1420,8 @@ function parseClaudeLine(
     const index =
       typeof streamEvent?.index === "number" ? streamEvent.index : undefined;
     if (streamEvent?.type === "message_start") {
+      state.activityIdsByIndex.clear();
+      state.textPartIdsByIndex.clear();
       const message = asRecord(streamEvent.message);
       if (typeof message?.model === "string") {
         state.model = message.model;
@@ -1429,10 +1451,25 @@ function parseClaudeLine(
       delta?.type === "text_delta" &&
       typeof delta.text === "string"
     ) {
-      sendDelta(event, request, state, delta.text);
+      sendDelta(
+        event,
+        request,
+        state,
+        delta.text,
+        index !== undefined ? state.textPartIdsByIndex.get(index) : undefined,
+      );
       return;
     }
     if (streamEvent?.type === "content_block_start" && contentBlock) {
+      if (contentBlock.type === "text") {
+        const textPartId = `claude-text-${state.nextTextPartSequence}`;
+        state.nextTextPartSequence += 1;
+        if (index !== undefined) {
+          state.textPartIdsByIndex.set(index, textPartId);
+        }
+        sendTextStart(event, request, textPartId);
+        return;
+      }
       const activityId = String(
         contentBlock.id ??
           (contentBlock.type === "thinking"
@@ -1935,12 +1972,21 @@ function parseCodexLine(
       return;
     }
 
-    if (item.type === "agent_message" && typeof item.text === "string") {
+    if (item.type === "agent_message") {
+      const partId = String(
+        item.id ?? `codex-text-${state.nextTextPartSequence}`,
+      );
+      if (payload.type === "item.started") {
+        state.nextTextPartSequence += 1;
+        sendTextStart(event, request, partId);
+      }
       if (
         payload.type === "item.completed" &&
+        typeof item.text === "string" &&
         !state.response.endsWith(item.text)
       ) {
-        sendDelta(event, request, state, item.text);
+        sendTextStart(event, request, partId);
+        sendDelta(event, request, state, item.text, partId);
       }
       return;
     }
@@ -2071,6 +2117,8 @@ function startCodexRun(event: IpcMainInvokeEvent, request: AgentRunRequest) {
     finished: false,
     activityLabels: new Map(),
     activityIdsByIndex: new Map(),
+    textPartIdsByIndex: new Map(),
+    nextTextPartSequence: 0,
     stdoutLines: 0,
     unparseableLines: 0,
     eventCounts: {},
@@ -2212,7 +2260,13 @@ function startCodexRun(event: IpcMainInvokeEvent, request: AgentRunRequest) {
 
     if (method === "item/agentMessage/delta") {
       if (typeof params.delta === "string") {
-        sendDelta(event, request, parserState, params.delta);
+        sendDelta(
+          event,
+          request,
+          parserState,
+          params.delta,
+          typeof params.itemId === "string" ? params.itemId : undefined,
+        );
       }
       return;
     }
@@ -2301,6 +2355,22 @@ function startCodexRun(event: IpcMainInvokeEvent, request: AgentRunRequest) {
       }
       if (typeof item.id === "string") {
         items.set(item.id, item);
+      }
+      if (codexItemType(item) === "agentmessage") {
+        const partId = String(
+          item.id ?? `codex-text-${parserState.nextTextPartSequence}`,
+        );
+        if (method === "item/started") {
+          parserState.nextTextPartSequence += 1;
+          sendTextStart(event, request, partId);
+        } else if (
+          typeof item.text === "string" &&
+          !parserState.response.endsWith(item.text)
+        ) {
+          sendTextStart(event, request, partId);
+          sendDelta(event, request, parserState, item.text, partId);
+        }
+        return;
       }
       const activity = codexActivityDescriptor(item);
       if (activity) {
@@ -2663,6 +2733,8 @@ ipcMain.handle("agent:run", (event, request: AgentRunRequest) => {
     finished: false,
     activityLabels: new Map(),
     activityIdsByIndex: new Map(),
+    textPartIdsByIndex: new Map(),
+    nextTextPartSequence: 0,
     stdoutLines: 0,
     unparseableLines: 0,
     eventCounts: {},

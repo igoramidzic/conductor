@@ -19,10 +19,23 @@ export type AgentActivity = {
   id: string;
   kind: AgentActivityKind;
   label: string;
-  status: "running" | "complete" | "error";
+  status: "running" | "complete" | "cancelled" | "error";
   detail?: string;
   output?: string;
 };
+
+export type ChatMessagePart =
+  | {
+      id: string;
+      type: "text";
+      content: string;
+      chunks: string[];
+    }
+  | {
+      id: string;
+      type: "activity";
+      activityId: string;
+    };
 
 export type AgentApprovalRequest = {
   id: string;
@@ -97,6 +110,7 @@ export type ChatMessage = {
   createdAt: number;
   status: MessageStatus;
   activities: AgentActivity[];
+  parts?: ChatMessagePart[];
   completedAt?: number;
   runId?: string;
   approval?: AgentApprovalRequest;
@@ -299,7 +313,8 @@ export type AgentEvent =
   | { runId: string; type: "approval"; approval: AgentApprovalRequest }
   | { runId: string; type: "approval-resolved"; approvalId: string }
   | { runId: string; type: "usage"; usage: AgentUsage }
-  | { runId: string; type: "delta"; text: string }
+  | { runId: string; type: "text-start"; partId: string }
+  | { runId: string; type: "delta"; text: string; partId?: string }
   | { runId: string; type: "complete"; response: string }
   | { runId: string; type: "cancelled" }
   | { runId: string; type: "error"; message: string };

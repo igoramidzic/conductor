@@ -27,6 +27,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import {
+  appendMessageText,
+  ensureActivityPart,
+  startTextPart,
+} from "@/message-timeline";
 import type {
   AgentAccessMode,
   AgentActivityKind,
@@ -435,6 +440,12 @@ function updateRun(
       return { ...session, messages };
     }
 
+    if (event.type === "text-start") {
+      messages[messageIndex] = startTextPart(message, event.partId);
+      didChange = messages[messageIndex] !== message;
+      return didChange ? { ...session, messages } : session;
+    }
+
     if (event.type === "approval-resolved") {
       if (message.approval?.id !== event.approvalId) {
         return session;
@@ -471,7 +482,11 @@ function updateRun(
       } else {
         activities[activityIndex] = activity;
       }
-      messages[messageIndex] = { ...message, activities };
+      messages[messageIndex] = {
+        ...message,
+        activities,
+        parts: ensureActivityPart(message, event.activityId),
+      };
       didChange = true;
       return { ...session, messages };
     }
@@ -491,9 +506,13 @@ function updateRun(
         normalizedState,
       )
         ? "error"
-        : ["DONE", "COMPLETE", "COMPLETED", "SUCCESS"].includes(normalizedState)
-          ? "complete"
-          : "running";
+        : ["CANCELLED", "CANCELED", "INTERRUPTED"].includes(normalizedState)
+          ? "cancelled"
+          : ["DONE", "COMPLETE", "COMPLETED", "SUCCESS"].includes(
+                normalizedState,
+              )
+            ? "complete"
+            : "running";
       const currentActivities = message.activities ?? [];
       const activityIndex = currentActivities.findIndex(
         (activity) => activity.id === event.activityId,
@@ -516,7 +535,11 @@ function updateRun(
       } else {
         activities[activityIndex] = activity;
       }
-      messages[messageIndex] = { ...message, activities };
+      messages[messageIndex] = {
+        ...message,
+        activities,
+        parts: ensureActivityPart(message, event.activityId),
+      };
       didChange = true;
       return { ...session, messages };
     }
@@ -524,9 +547,7 @@ function updateRun(
     didChange = true;
     if (event.type === "delta") {
       messages[messageIndex] = {
-        ...message,
-        content: `${message.content}${event.text}`,
-        chunks: [...message.chunks, event.text],
+        ...appendMessageText(message, event.text, event.partId),
         status: "streaming",
       };
     } else if (event.type === "complete") {
@@ -554,18 +575,33 @@ function updateRun(
     } else if (event.type === "cancelled") {
       messages[messageIndex] = {
         ...message,
+        activities: (message.activities ?? []).map((activity) => ({
+          ...activity,
+          status:
+            activity.status === "running"
+              ? ("cancelled" as const)
+              : activity.status,
+        })),
         status: "cancelled",
         completedAt: Date.now(),
         runId: undefined,
         approval: undefined,
       };
     } else if (event.type === "error") {
+      const messageWithError = appendMessageText(
+        message,
+        event.message,
+        `${message.id}-error`,
+      );
       messages[messageIndex] = {
-        ...message,
-        content: message.content
-          ? `${message.content}\n\n${event.message}`
-          : event.message,
-        chunks: [...message.chunks, event.message],
+        ...messageWithError,
+        activities: (message.activities ?? []).map((activity) => ({
+          ...activity,
+          status:
+            activity.status === "running"
+              ? ("error" as const)
+              : activity.status,
+        })),
         status: "error",
         completedAt: Date.now(),
         runId: undefined,
@@ -1509,6 +1545,7 @@ function ConductorApp() {
       createdAt: now + 1,
       status: "thinking",
       activities: [],
+      parts: [],
       runId,
     };
 
@@ -1874,7 +1911,7 @@ function ConductorApp() {
 
 export function App() {
   return (
-    <ThemeProvider defaultTheme="system" storageKey="conductor.theme.v1">
+    <ThemeProvider defaultTheme="light" storageKey="conductor.theme.v1">
       <TooltipProvider delay={300}>
         <SidebarProvider
           className="h-svh min-h-0 overflow-hidden"

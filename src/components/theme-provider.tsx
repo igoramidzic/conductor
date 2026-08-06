@@ -2,13 +2,12 @@ import {
   createContext,
   type ReactNode,
   useContext,
-  useEffect,
   useLayoutEffect,
   useMemo,
   useState,
 } from "react";
 
-export type Theme = "light" | "dark" | "system";
+export type Theme = "light" | "dark";
 
 type ThemeProviderProps = {
   children: ReactNode;
@@ -26,53 +25,42 @@ const ThemeProviderContext = createContext<ThemeProviderState | undefined>(
 );
 
 function isTheme(value: string | null): value is Theme {
-  return value === "light" || value === "dark" || value === "system";
+  return value === "light" || value === "dark";
 }
 
-function resolveTheme(theme: Theme, systemPrefersDark: boolean) {
-  if (theme === "system") {
-    return systemPrefersDark ? "dark" : "light";
-  }
-  return theme;
-}
-
-function applyTheme(theme: Theme, systemPrefersDark: boolean) {
+function applyTheme(theme: Theme) {
   const root = document.documentElement;
-  const resolvedTheme = resolveTheme(theme, systemPrefersDark);
 
   root.classList.remove("light", "dark");
-  root.classList.add(resolvedTheme);
-  root.style.colorScheme = resolvedTheme;
+  root.classList.add(theme);
+  root.style.colorScheme = theme;
 }
 
 export function ThemeProvider({
   children,
-  defaultTheme = "system",
+  defaultTheme = "light",
   storageKey = "conductor.theme.v1",
 }: ThemeProviderProps) {
   const [theme, setThemeState] = useState<Theme>(() => {
     const storedTheme = window.localStorage.getItem(storageKey);
-    return isTheme(storedTheme) ? storedTheme : defaultTheme;
+    if (isTheme(storedTheme)) {
+      return storedTheme;
+    }
+
+    if (storedTheme === "system") {
+      const migratedTheme = window.matchMedia("(prefers-color-scheme: dark)")
+        .matches
+        ? "dark"
+        : "light";
+      window.localStorage.setItem(storageKey, migratedTheme);
+      return migratedTheme;
+    }
+
+    return defaultTheme;
   });
 
   useLayoutEffect(() => {
-    const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
-    applyTheme(theme, systemTheme.matches);
-  }, [theme]);
-
-  useEffect(() => {
-    if (theme !== "system") {
-      return;
-    }
-
-    const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
-    const handleSystemThemeChange = (event: MediaQueryListEvent) => {
-      applyTheme("system", event.matches);
-    };
-
-    systemTheme.addEventListener("change", handleSystemThemeChange);
-    return () =>
-      systemTheme.removeEventListener("change", handleSystemThemeChange);
+    applyTheme(theme);
   }, [theme]);
 
   const value = useMemo<ThemeProviderState>(

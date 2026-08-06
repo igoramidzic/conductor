@@ -99,6 +99,11 @@ import { SidebarInset, useSidebar } from "@/components/ui/sidebar";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import {
+  type ChatTextPart,
+  timelineBlocks,
+  visibleMessageParts,
+} from "@/message-timeline";
 import type {
   AgentAccessMode,
   AgentActivity,
@@ -380,6 +385,9 @@ function ActivityIcon({ activity }: { activity: AgentActivity }) {
   if (activity.status === "running") {
     return <ThinkingDots />;
   }
+  if (activity.status === "cancelled") {
+    return <Square className="size-3.5" />;
+  }
   if (activity.status === "error") {
     return <AlertCircle className="size-3.5" />;
   }
@@ -463,15 +471,6 @@ function ActivityDetail({ activity }: { activity: AgentActivity }) {
   );
 }
 
-function releaseMessageScrollerAnchor(element: HTMLElement) {
-  const viewport = element
-    .closest('[data-slot="message-scroller"]')
-    ?.querySelector<HTMLElement>('[data-slot="message-scroller-viewport"]');
-  viewport?.dispatchEvent(
-    new WheelEvent("wheel", { bubbles: true, deltaY: 0 }),
-  );
-}
-
 function ToolCall({ activity }: { activity: AgentActivity }) {
   const hasDetails = Boolean(
     activity.detail?.trim() || activity.output?.trim(),
@@ -482,7 +481,7 @@ function ToolCall({ activity }: { activity: AgentActivity }) {
       <Marker
         role="status"
         className={cn(
-          "min-w-0 gap-2 py-0.5 text-[13px] leading-5 text-muted-foreground transition-colors hover:text-foreground motion-reduce:transition-none",
+          "min-w-0 gap-2 py-0 text-[13px] leading-5 text-muted-foreground transition-colors hover:text-foreground motion-reduce:transition-none",
           activity.status === "error" &&
             "text-destructive hover:text-destructive",
         )}
@@ -508,11 +507,10 @@ function ToolCall({ activity }: { activity: AgentActivity }) {
       <CollapsibleTrigger
         type="button"
         className={cn(
-          "group/tool-call -ml-1 block max-w-full rounded-md px-1 py-0.5 text-left text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 motion-reduce:transition-none",
+          "group/tool-call -ml-1 block max-w-full rounded-md px-1 py-0 text-left text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 motion-reduce:transition-none",
           activity.status === "error" &&
             "text-destructive hover:text-destructive",
         )}
-        onClick={(event) => releaseMessageScrollerAnchor(event.currentTarget)}
       >
         <Marker
           role="status"
@@ -541,6 +539,9 @@ function ToolCall({ activity }: { activity: AgentActivity }) {
 }
 
 function activitySummary(activities: AgentActivity[]) {
+  const hasReasoning = activities.some(
+    (activity) => activity.kind === "reasoning",
+  );
   const hasFileChanges = activities.some(
     (activity) => activity.kind === "file-change",
   );
@@ -580,7 +581,9 @@ function activitySummary(activities: AgentActivity[]) {
       ? `ran ${commandCount === 1 ? "a command" : "commands"}`
       : null,
   ].filter((phrase): phrase is string => phrase !== null);
-  const summary = phrases.join(", ") || "worked on the request";
+  const summary =
+    phrases.join(", ") ||
+    (hasReasoning ? "thought through the request" : "worked on the request");
   return `${summary[0]?.toUpperCase() ?? ""}${summary.slice(1)}`;
 }
 
@@ -594,55 +597,47 @@ function ActivitySummaryIcon({ activities }: { activities: AgentActivity[] }) {
   if (activities.some((activity) => activity.kind === "web-search")) {
     return <Globe2 className="size-3.5" />;
   }
+  if (activities.some((activity) => activity.kind === "reasoning")) {
+    return <Brain className="size-3.5" />;
+  }
   return <Wrench className="size-3.5" />;
 }
 
 function ExecutionTrace({
-  message,
   activities,
+  current,
 }: {
-  message: ChatMessage;
   activities: AgentActivity[];
+  current: boolean;
 }) {
-  const isActive =
-    message.status === "thinking" || message.status === "streaming";
-  const reasoningActivities = activities.filter(
-    (activity) => activity.kind === "reasoning",
-  );
-  const actionActivities = activities.filter(
-    (activity) => activity.kind !== "reasoning",
-  );
-  const currentReasoning = [...reasoningActivities].reverse()[0];
-
-  if (actionActivities.length === 0) {
-    return isActive ? (
-      <Marker role="status" className="execution-activity w-fit text-xs">
-        <MarkerIcon>
-          <ThinkingDots />
-        </MarkerIcon>
-        <MarkerContent className="shimmer">
-          {currentReasoning?.label ??
-            (message.status === "streaming" ? "Writing response" : "Thinking")}
-          …
-        </MarkerContent>
-      </Marker>
-    ) : null;
-  }
+  const currentActivity = current
+    ? ([...activities]
+        .reverse()
+        .find((activity) => activity.status === "running") ?? activities.at(-1))
+    : undefined;
 
   return (
     <Collapsible defaultOpen={false} className="execution-activity min-w-0">
       <CollapsibleTrigger
         type="button"
         className="group/execution-trigger -ml-1 block max-w-full rounded-md px-1 py-0.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-        onClick={(event) => releaseMessageScrollerAnchor(event.currentTarget)}
       >
         <Marker className="w-auto max-w-full gap-2 text-[13px] leading-5">
           <MarkerIcon>
-            <ActivitySummaryIcon activities={actionActivities} />
+            {currentActivity ? (
+              <ActivityIcon activity={currentActivity} />
+            ) : (
+              <ActivitySummaryIcon activities={activities} />
+            )}
           </MarkerIcon>
-          <MarkerContent className={cn("truncate", isActive && "shimmer")}>
-            {activitySummary(actionActivities)}
-            {isActive ? "…" : ""}
+          <MarkerContent
+            className={cn(
+              "truncate",
+              currentActivity?.status === "running" && "shimmer",
+            )}
+          >
+            {currentActivity?.label ?? activitySummary(activities)}
+            {currentActivity?.status === "running" ? "…" : ""}
           </MarkerContent>
           <ChevronDown className="size-3.5 shrink-0 opacity-0 transition-[opacity,transform] duration-200 group-hover/execution-trigger:opacity-100 group-focus-visible/execution-trigger:opacity-100 group-data-[panel-open]/execution-trigger:rotate-180 group-data-[panel-open]/execution-trigger:opacity-100 motion-reduce:transition-none" />
         </Marker>
@@ -652,8 +647,8 @@ function ExecutionTrace({
           className="max-h-50 min-w-0"
           viewportClassName="h-auto max-h-50 scroll-fade-y"
         >
-          <div className="grid min-w-0 gap-0 pt-1.5 pb-0.5">
-            {actionActivities.map((activity) => (
+          <div className="grid min-w-0 gap-0 pt-1 pb-0">
+            {activities.map((activity) => (
               <ToolCall key={activity.id} activity={activity} />
             ))}
           </div>
@@ -663,20 +658,119 @@ function ExecutionTrace({
   );
 }
 
+function ResponseTextPart({
+  messageId,
+  part,
+  complete,
+}: {
+  messageId: string;
+  part: ChatTextPart;
+  complete: boolean;
+}) {
+  const animatedChunks = useMemo(
+    () => splitResponseChunks(part.chunks),
+    [part.chunks],
+  );
+  if (complete) {
+    return <MarkdownResponse>{part.content}</MarkdownResponse>;
+  }
+  return (
+    <div className="streaming-response text-[14px] leading-6 whitespace-pre-wrap">
+      {animatedChunks.map((chunk) => (
+        <span
+          key={`${messageId}-${part.id}-${chunk.offset}`}
+          className="response-chunk"
+        >
+          {chunk.text}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function ActiveRunIndicator({
+  message,
+  activities,
+  hasCurrentActivityGroup,
+}: {
+  message: ChatMessage;
+  activities: AgentActivity[];
+  hasCurrentActivityGroup: boolean;
+}) {
+  if (
+    hasCurrentActivityGroup ||
+    activities.some((activity) => activity.status === "running")
+  ) {
+    return null;
+  }
+  const latestReasoning = [...activities]
+    .reverse()
+    .find((activity) => activity.kind === "reasoning");
+  return (
+    <Marker role="status" className="execution-activity w-fit text-xs">
+      <MarkerIcon>
+        <ThinkingDots />
+      </MarkerIcon>
+      <MarkerContent className="shimmer">
+        {message.status === "streaming"
+          ? "Writing response"
+          : (latestReasoning?.label ?? "Thinking")}
+        …
+      </MarkerContent>
+    </Marker>
+  );
+}
+
 function AgentResponse({ message }: { message: ChatMessage }) {
   const activities = (message.activities ?? []).filter(
     (activity) =>
       !(activity.id === "item_0" && activity.label.toLowerCase() === "error"),
   );
-  const animatedChunks = useMemo(
-    () => splitResponseChunks(message.chunks),
-    [message.chunks],
+  const isActive =
+    message.status === "thinking" || message.status === "streaming";
+  const activitiesById = useMemo(
+    () => new Map(activities.map((activity) => [activity.id, activity])),
+    [activities],
   );
+  const parts = useMemo(
+    () => visibleMessageParts(message, activities),
+    [message, activities],
+  );
+  const blocks = useMemo(
+    () => timelineBlocks(parts, activitiesById),
+    [activitiesById, parts],
+  );
+  const hasCurrentActivityGroup =
+    isActive &&
+    blocks.some((block) => block.type === "activities" && !block.settled);
 
   return (
     <Message>
-      <MessageContent className="gap-2.5">
-        <ExecutionTrace message={message} activities={activities} />
+      <MessageContent className="gap-3">
+        {blocks.map((block) =>
+          block.type === "text" ? (
+            <ResponseTextPart
+              key={block.id}
+              messageId={message.id}
+              part={block.part}
+              complete={!isActive}
+            />
+          ) : (
+            <ExecutionTrace
+              key={block.id}
+              activities={block.activities}
+              current={isActive && !block.settled}
+            />
+          ),
+        )}
+
+        {isActive ? (
+          <ActiveRunIndicator
+            message={message}
+            activities={activities}
+            hasCurrentActivityGroup={hasCurrentActivityGroup}
+          />
+        ) : null}
 
         {message.status === "error" ? (
           <Marker
@@ -698,23 +792,6 @@ function AgentResponse({ message }: { message: ChatMessage }) {
             </MarkerIcon>
             <MarkerContent>Stopped</MarkerContent>
           </Marker>
-        ) : null}
-
-        {message.content ? (
-          message.status === "complete" ? (
-            <MarkdownResponse>{message.content}</MarkdownResponse>
-          ) : (
-            <div className="streaming-response text-[14px] leading-6 whitespace-pre-wrap">
-              {animatedChunks.map((chunk) => (
-                <span
-                  key={`${message.id}-${chunk.offset}`}
-                  className="response-chunk"
-                >
-                  {chunk.text}
-                </span>
-              ))}
-            </div>
-          )
         ) : null}
       </MessageContent>
     </Message>
@@ -1999,11 +2076,7 @@ function SessionView({
               ) : null}
 
               {session.messages.map((message) => (
-                <MessageScrollerItem
-                  key={message.id}
-                  messageId={message.id}
-                  scrollAnchor={message.role === "user"}
-                >
+                <MessageScrollerItem key={message.id} messageId={message.id}>
                   {message.role === "user" ? (
                     <UserMessage message={message} />
                   ) : (

@@ -673,11 +673,7 @@ export function ConductorSidebar({
                     <DropdownMenuRadioGroup
                       value={theme}
                       onValueChange={(value) => {
-                        if (
-                          value === "light" ||
-                          value === "dark" ||
-                          value === "system"
-                        ) {
+                        if (value === "light" || value === "dark") {
                           setTheme(value);
                         }
                       }}
@@ -687,9 +683,6 @@ export function ConductorSidebar({
                       </DropdownMenuRadioItem>
                       <DropdownMenuRadioItem value="dark" closeOnClick>
                         Dark
-                      </DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem value="system" closeOnClick>
-                        System
                       </DropdownMenuRadioItem>
                     </DropdownMenuRadioGroup>
                   </DropdownMenuSubContent>
