@@ -21,6 +21,12 @@ import started from "electron-squirrel-startup";
 import * as pty from "node-pty";
 
 import { getAgentAccessArgs, resolveAgentAccessMode } from "./agent-access";
+import {
+  geminiStartupFailure,
+  redactAgentArguments,
+  redactPrompt,
+  trailingDiagnosticLines,
+} from "./agent-diagnostics";
 import { readRecordedGeminiUsage } from "./gemini-context-usage";
 import { getGeminiAccountUsage } from "./gemini-usage";
 import {
@@ -68,9 +74,63 @@ type ActiveRun = {
   senderId: number;
   cancelled: boolean;
   pendingApprovals?: Map<string, PendingCodexApproval>;
+  cleanup?: () => void;
 };
 
 const activeRuns = new Map<string, ActiveRun>();
+const GEMINI_STREAM_START_TIMEOUT_MS = 45_000;
+const GEMINI_FIRST_PROGRESS_TIMEOUT_MS = 180_000;
+const AGENT_LOG_FILE_NAME = "agent.log";
+let agentLogWriteQueue = Promise.resolve();
+
+type AgentDiagnosticLevel = "info" | "warn" | "error";
+
+function agentLogFilePath() {
+  return path.join(app.getPath("logs"), AGENT_LOG_FILE_NAME);
+}
+
+function writeAgentDiagnostic(
+  level: AgentDiagnosticLevel,
+  runId: string,
+  message: string,
+  details: Record<string, unknown> = {},
+) {
+  const consoleMessage = `[agent:${runId}] ${message}`;
+  if (level === "error") {
+    console.error(consoleMessage, details);
+  } else if (level === "warn") {
+    console.warn(consoleMessage, details);
+  } else {
+    console.info(consoleMessage, details);
+  }
+
+  const entry = `${JSON.stringify({
+    timestamp: new Date().toISOString(),
+    level,
+    runId,
+    event: message,
+    details,
+  })}\n`;
+  agentLogWriteQueue = agentLogWriteQueue
+    .catch(() => undefined)
+    .then(async () => {
+      const filePath = agentLogFilePath();
+      await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.promises.appendFile(filePath, entry, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+    })
+    .catch((error: unknown) => {
+      console.error("[agent] Could not write the agent diagnostic log.", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+}
+
+function withAgentLogLocation(message: string) {
+  return `${message}\n\nAgent log: ${agentLogFilePath()}`;
+}
 
 type TerminalSession = {
   process: pty.IPty;
@@ -951,7 +1011,7 @@ function logAgentStreamLine(
     payload = JSON.parse(line) as Record<string, unknown>;
   } catch {
     state.unparseableLines += 1;
-    console.warn(`[agent:${request.runId}] Non-JSON stdout line.`, {
+    writeAgentDiagnostic("warn", request.runId, "Non-JSON stdout line.", {
       line: state.stdoutLines,
       characters: line.length,
     });
@@ -964,6 +1024,10 @@ function logAgentStreamLine(
   const eventName =
     typeof discriminator === "string" ? discriminator : "unknown";
   state.eventCounts[eventName] = (state.eventCounts[eventName] ?? 0) + 1;
+  console.info(`[agent:${request.runId}] stdout event.`, {
+    line: state.stdoutLines,
+    event: eventName,
+  });
 }
 
 function sendConversation(
@@ -1342,20 +1406,33 @@ function parseGeminiLine(
 
   if (payload.type === "error" && typeof payload.message === "string") {
     state.lastError = payload.message;
+    writeAgentDiagnostic(
+      "warn",
+      request.runId,
+      "Gemini emitted an error event.",
+      { message: redactPrompt(payload.message, request.prompt) },
+    );
     return;
   }
 
   if (payload.type === "result") {
     if (String(payload.status).toLowerCase() === "error") {
       const error = payload.error as Record<string, unknown> | undefined;
+      const message =
+        typeof error?.message === "string"
+          ? error.message
+          : (state.lastError ?? "Gemini stopped before finishing.");
       state.finished = true;
+      writeAgentDiagnostic(
+        "error",
+        request.runId,
+        "Gemini returned an error result.",
+        { message: redactPrompt(message, request.prompt) },
+      );
       sendAgentEvent(event, {
         runId: request.runId,
         type: "error",
-        message:
-          typeof error?.message === "string"
-            ? error.message
-            : (state.lastError ?? "Gemini stopped before finishing."),
+        message: withAgentLogLocation(message),
       });
       return;
     }
@@ -2752,7 +2829,28 @@ ipcMain.handle("agent:run", (event, request: AgentRunRequest) => {
   }
 
   const { executable, args } = createRunCommand(request);
+  const provider = request.provider ?? "gemini";
   const cwd = request.sourceFolder ?? app.getPath("home");
+  const canAccessCwd = (mode: number) => {
+    try {
+      fs.accessSync(cwd, mode);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  writeAgentDiagnostic("info", request.runId, "Starting agent run.", {
+    provider,
+    executable,
+    cwd,
+    cwdReadable: canAccessCwd(fs.constants.R_OK),
+    cwdWritable: canAccessCwd(fs.constants.W_OK),
+    model: request.model ?? null,
+    accessMode: resolveAgentAccessMode(provider, request.accessMode),
+    resumedConversation: Boolean(request.conversationId),
+    promptCharacters: request.prompt.length,
+    arguments: redactAgentArguments(provider, args, request.prompt),
+  });
 
   const child = spawn(executable, args, {
     cwd,
@@ -2760,7 +2858,7 @@ ipcMain.handle("agent:run", (event, request: AgentRunRequest) => {
     stdio: "pipe",
   });
   child.stdin.end();
-  const activeRun = {
+  const activeRun: ActiveRun = {
     process: child,
     senderId: event.sender.id,
     cancelled: false,
@@ -2781,6 +2879,106 @@ ipcMain.handle("agent:run", (event, request: AgentRunRequest) => {
     unparseableLines: 0,
     eventCounts: {},
   };
+  let streamStartTimer: ReturnType<typeof setTimeout> | undefined;
+  let firstProgressTimer: ReturnType<typeof setTimeout> | undefined;
+  let streamConnected = false;
+  const startedAt = Date.now();
+
+  const clearRunTimers = () => {
+    if (streamStartTimer) {
+      clearTimeout(streamStartTimer);
+      streamStartTimer = undefined;
+    }
+    if (firstProgressTimer) {
+      clearTimeout(firstProgressTimer);
+      firstProgressTimer = undefined;
+    }
+  };
+  activeRun.cleanup = clearRunTimers;
+
+  const failGeminiRun = (message: string, reason: string) => {
+    if (
+      provider !== "gemini" ||
+      parserState.finished ||
+      activeRun.cancelled ||
+      activeRuns.get(request.runId) !== activeRun
+    ) {
+      return;
+    }
+    clearRunTimers();
+    parserState.finished = true;
+    activeRuns.delete(request.runId);
+    const details = redactPrompt(
+      trailingDiagnosticLines(stderrBuffer),
+      request.prompt,
+    );
+    writeAgentDiagnostic("error", request.runId, reason, {
+      stdoutLines: parserState.stdoutLines,
+      unparseableLines: parserState.unparseableLines,
+      eventCounts: parserState.eventCounts,
+      trailingStderr: details || null,
+    });
+    sendAgentEvent(event, {
+      runId: request.runId,
+      type: "error",
+      message: withAgentLogLocation(message),
+    });
+    child.kill("SIGTERM");
+  };
+
+  const markStreamConnected = () => {
+    if (provider !== "gemini" || streamConnected) {
+      return;
+    }
+    streamConnected = true;
+    if (streamStartTimer) {
+      clearTimeout(streamStartTimer);
+      streamStartTimer = undefined;
+    }
+    writeAgentDiagnostic("info", request.runId, "Gemini stream connected.", {
+      elapsedMilliseconds: Date.now() - startedAt,
+      firstEvents: Object.keys(parserState.eventCounts),
+    });
+    firstProgressTimer = setTimeout(() => {
+      failGeminiRun(
+        "Gemini connected but did not produce a response or activity within 3 minutes. This usually means the request is stalled by work-account policy, authentication, or network access. Run gemini once in a terminal to see its interactive diagnostic, then retry.",
+        "Gemini produced no response after connecting.",
+      );
+    }, GEMINI_FIRST_PROGRESS_TIMEOUT_MS);
+  };
+
+  const markFirstProgress = () => {
+    if (provider !== "gemini" || !firstProgressTimer) {
+      return;
+    }
+    if (parserState.finished) {
+      clearTimeout(firstProgressTimer);
+      firstProgressTimer = undefined;
+      return;
+    }
+    if (
+      parserState.response.length > 0 ||
+      parserState.activityLabels.size > 0
+    ) {
+      clearTimeout(firstProgressTimer);
+      firstProgressTimer = undefined;
+      writeAgentDiagnostic(
+        "info",
+        request.runId,
+        "Gemini produced its first response activity.",
+        { elapsedMilliseconds: Date.now() - startedAt },
+      );
+    }
+  };
+
+  if (provider === "gemini") {
+    streamStartTimer = setTimeout(() => {
+      failGeminiRun(
+        "Gemini did not start its response stream within 45 seconds. Run gemini once in a terminal, finish any work-account authentication or setup prompt, then retry in Conductor.",
+        "Gemini stream startup timed out.",
+      );
+    }, GEMINI_STREAM_START_TIMEOUT_MS);
+  }
 
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk: string) => {
@@ -2789,35 +2987,77 @@ ipcMain.handle("agent:run", (event, request: AgentRunRequest) => {
     stdoutBuffer = lines.pop() ?? "";
     for (const line of lines) {
       parseAgentLine(event, request, parserState, line);
+      if (parserState.stdoutLines > parserState.unparseableLines) {
+        markStreamConnected();
+      }
+      markFirstProgress();
     }
   });
 
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk: string) => {
     stderrBuffer = `${stderrBuffer}${chunk}`.slice(-8_000);
+    console.warn(`[agent:${request.runId}] stderr output.`, {
+      characters: chunk.length,
+      bufferedCharacters: stderrBuffer.length,
+    });
+    const authenticationFailure =
+      provider === "gemini" ? geminiStartupFailure(stderrBuffer) : undefined;
+    if (authenticationFailure) {
+      failGeminiRun(
+        authenticationFailure,
+        "Gemini requires interactive authentication.",
+      );
+    }
   });
 
   child.on("error", (error) => {
-    console.error(`[agent:${request.runId}] Agent process failed to start.`, {
-      message: error.message,
-      executable,
-      cwd,
-    });
+    clearRunTimers();
+    writeAgentDiagnostic(
+      "error",
+      request.runId,
+      "Agent process failed to start.",
+      {
+        message: error.message,
+        executable,
+        cwd,
+      },
+    );
     activeRuns.delete(request.runId);
     parserState.finished = true;
     sendAgentEvent(event, {
       runId: request.runId,
       type: "error",
-      message: `Could not start the agent: ${error.message}`,
+      message: withAgentLogLocation(
+        `Could not start the agent: ${error.message}`,
+      ),
     });
   });
 
   child.on("close", (code) => {
     if (stdoutBuffer.trim()) {
       parseAgentLine(event, request, parserState, stdoutBuffer);
+      if (parserState.stdoutLines > parserState.unparseableLines) {
+        markStreamConnected();
+      }
+      markFirstProgress();
     }
+    clearRunTimers();
 
     activeRuns.delete(request.runId);
+    const details = trailingDiagnosticLines(stderrBuffer);
+    const loggedDetails = redactPrompt(details, request.prompt);
+    writeAgentDiagnostic("info", request.runId, "Agent process closed.", {
+      provider,
+      code,
+      cancelled: activeRun.cancelled,
+      parserFinished: parserState.finished,
+      responseCharacters: parserState.response.length,
+      stdoutLines: parserState.stdoutLines,
+      unparseableLines: parserState.unparseableLines,
+      eventCounts: parserState.eventCounts,
+      trailingStderr: loggedDetails || null,
+    });
 
     if (activeRun.cancelled) {
       sendAgentEvent(event, { runId: request.runId, type: "cancelled" });
@@ -2825,15 +3065,12 @@ ipcMain.handle("agent:run", (event, request: AgentRunRequest) => {
     }
 
     if (code !== 0 && !parserState.finished) {
-      const details = stderrBuffer
-        .split(/\r?\n/)
-        .filter(Boolean)
-        .slice(-4)
-        .join("\n");
       sendAgentEvent(event, {
         runId: request.runId,
         type: "error",
-        message: details || `The agent exited with code ${code ?? "unknown"}.`,
+        message: withAgentLogLocation(
+          details || `The agent exited with code ${code ?? "unknown"}.`,
+        ),
       });
     } else if (code === 0 && !parserState.finished) {
       console.warn(
@@ -2851,6 +3088,7 @@ ipcMain.handle("agent:cancel", (event, runId: string) => {
   }
 
   run.cancelled = true;
+  run.cleanup?.();
   return run.process.kill("SIGTERM");
 });
 
@@ -3067,6 +3305,7 @@ function createWindow() {
     for (const [runId, run] of activeRuns) {
       if (run.senderId === senderId) {
         run.cancelled = true;
+        run.cleanup?.();
         run.process.kill("SIGTERM");
         activeRuns.delete(runId);
       }

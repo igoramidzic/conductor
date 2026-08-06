@@ -760,6 +760,18 @@ function ConductorApp() {
 
   useEffect(() => {
     return window.electron.onAgentEvent((event) => {
+      console.info("[agent] Renderer received event.", {
+        runId: event.runId,
+        type: event.type,
+        characters:
+          event.type === "delta"
+            ? event.text.length
+            : event.type === "complete"
+              ? event.response.length
+              : event.type === "error"
+                ? event.message.length
+                : undefined,
+      });
       setWorkspace((current) => updateRun(current, event));
     });
   }, []);
